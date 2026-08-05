@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ProjectSync.Functions/ProjectSync.Functions.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ProjectSync.Functions.Tests/ProjectSync.Functions.Tests.csproj" />
+  </Folder>
+</Solution>

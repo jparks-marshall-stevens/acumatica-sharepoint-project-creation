@@ -1,0 +1,24 @@
+# Build output
+bin/
+obj/
+out/
+
+# Azure Functions
+local.settings.json
+.azurefunctions/
+
+# User-specific / IDE
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Secrets / certs
+*.pfx
+*.pem
+*.cer
+appsettings.*.local.json
+
+# OS
+.DS_Store
+Thumbs.db
