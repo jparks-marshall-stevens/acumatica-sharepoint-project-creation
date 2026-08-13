@@ -7,10 +7,9 @@ public static class SharePointNaming
     private static readonly char[] InvalidNameChars = { '\\', '/', ':', '*', '?', '"', '<', '>', '|', '#', '%' };
 
     /// <summary>
-    /// Builds a document-set folder name as "{first N chars of customer name} | {project id}",
-    /// sanitized for SharePoint (the '|' is illegal and becomes '-'). Falls back to just the project id
-    /// when the customer name is blank. Because the (unique) project id is part of the name, names are
-    /// effectively unique.
+    /// Builds a document-set folder name as "{first N chars of customer name} ({project id})",
+    /// sanitized for SharePoint. Falls back to just the project id when the customer name is blank.
+    /// Because the (unique) project id is part of the name, names are effectively unique.
     /// </summary>
     public static string BuildDocumentSetName(string? customerName, string projectId, int customerMaxLength)
     {
@@ -20,7 +19,7 @@ public static class SharePointNaming
             customer = customer[..customerMaxLength].Trim();
         }
 
-        var raw = string.IsNullOrEmpty(customer) ? projectId : $"{customer} | {projectId}";
+        var raw = string.IsNullOrEmpty(customer) ? projectId : $"{customer} ({projectId})";
         return SanitizeLeafName(raw);
     }
 

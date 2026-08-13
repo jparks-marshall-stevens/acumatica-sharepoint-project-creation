@@ -76,7 +76,7 @@ if (result.Plan is { Count: > 0 })
     // Aligned table of the values that would be written.
     const int wName = 42, wId = 16, wCust = 30, wPm = 20, wDate = 10;
     string H(string s, int w) => (s.Length > w ? s[..(w - 1)] + "…" : s).PadRight(w);
-    Console.WriteLine($"{H("Folder name (customer | project id)", wName)} {H("Project Id", wId)} {H("Customer", wCust)} {H("Project Manager", wPm)} {H("Created", wDate)}");
+    Console.WriteLine($"{H("Folder name = Customer (Id)", wName)} {H("Project Id", wId)} {H("Customer", wCust)} {H("Project Manager", wPm)} {H("Created", wDate)}");
     Console.WriteLine(new string('-', wName + wId + wCust + wPm + wDate + 4));
     foreach (var p in rows)
     {

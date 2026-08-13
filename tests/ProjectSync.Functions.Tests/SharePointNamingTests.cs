@@ -34,26 +34,26 @@ public class SharePointNamingTests
     }
 
     [Fact]
-    public void BuildDocumentSetName_FirstNCustomerChars_PipeProjectId()
+    public void BuildDocumentSetName_FirstNCustomerChars_ParenthesizedProjectId()
     {
-        // First 10 chars of customer + " | " + project id; the illegal '|' becomes '-'.
+        // First 10 chars of customer + " (project id)".
         var name = SharePointNaming.BuildDocumentSetName("Robert Palumbo", "10-31-21-74663", 10);
-        Assert.Equal("Robert Pal - 10-31-21-74663", name);
+        Assert.Equal("Robert Pal (10-31-21-74663)", name);
     }
 
     [Fact]
     public void BuildDocumentSetName_ShortCustomer_UsedWhole()
     {
         var name = SharePointNaming.BuildDocumentSetName("GPM, Inc.", "15-31-26-10451", 10);
-        Assert.Equal("GPM, Inc. - 15-31-26-10451", name);
+        Assert.Equal("GPM, Inc. (15-31-26-10451)", name);
     }
 
     [Fact]
-    public void BuildDocumentSetName_TruncationTrimsTrailingSpace()
+    public void BuildDocumentSetName_TruncationKeepsAmpersand()
     {
-        // "Kelleher &" is 10 chars; no trailing space here, but verify ampersand is kept and trim works.
+        // "Kelleher &" is the first 10 chars; ampersand is legal and kept.
         var name = SharePointNaming.BuildDocumentSetName("Kelleher & Holland, LLC", "10-31-21-74664", 10);
-        Assert.Equal("Kelleher & - 10-31-21-74664", name);
+        Assert.Equal("Kelleher & (10-31-21-74664)", name);
     }
 
     [Theory]

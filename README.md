@@ -18,7 +18,7 @@ Acumatica: OAuth2 token (ROPC/password grant)
    ▼
 For each new project (filtered to IncludedPractices, minus ExcludedProjectIds):
    • resolve practice → site + library + parent folder
-   • create Document Set (content type "Project") named "{customer} | {project id}"
+   • create Document Set (content type "Project") named "{customer} ({project id})"
    • set metadata: Project Id, Customer Name, Project Name, Project Manager (People field)
    • set permissions: break inheritance; Owners = Full Control;
                       Project Manager + Practice Leader = Edit
@@ -30,11 +30,11 @@ Advance + persist watermark (newest processed CreatedOn)
 ### Key design points
 - **Moving-forward only.** `State:FirstRunLookbackHours = 0`, so the first run stamps the
   watermark at "now" and only new projects are processed — no historical backfill.
-- **Folder naming.** `{first N chars of Customer Name} | {Project Id}` (`N` =
-  `SharePoint:DocumentSetNameMaxLength`, default 10), sanitized — the `|` is illegal in SharePoint so
-  it renders as `-` (e.g. `Robert Pal - 10-31-21-74663`). Because the unique Project Id is part of the
-  name, names are effectively unique; **dedup is still keyed on the Project Id column**. Blank customer
-  names fall back to just the id.
+- **Folder naming.** `{first N chars of Customer Name} ({Project Id})` (`N` =
+  `SharePoint:DocumentSetNameMaxLength`, default 10), sanitized for SharePoint (e.g.
+  `Robert Pal (10-31-21-74663)`). Because the unique Project Id is part of the name, names are
+  effectively unique; **dedup is still keyed on the Project Id column**. Blank customer names fall
+  back to just the id.
 - **People field.** The GI's `ProjectManager` column returns the PM's **email**; the function
   resolves it to a SharePoint user (`EnsureUser`). Emails outside the tenant are left blank (fail-soft).
 - **Fail-safe ordering.** Oldest-first; if a project fails the cycle halts and the watermark holds
