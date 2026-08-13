@@ -9,6 +9,7 @@
     <Project Path="tools/AcumaticaConnectivityTest/AcumaticaConnectivityTest.csproj" />
     <Project Path="tools/CreateOneDocumentSet/CreateOneDocumentSet.csproj" />
     <Project Path="tools/ProjectSyncDryRun/ProjectSyncDryRun.csproj" />
+    <Project Path="tools/RenameFolder/RenameFolder.csproj" />
     <Project Path="tools/SharePointConnectivityTest/SharePointConnectivityTest.csproj" />
   </Folder>
 </Solution>
