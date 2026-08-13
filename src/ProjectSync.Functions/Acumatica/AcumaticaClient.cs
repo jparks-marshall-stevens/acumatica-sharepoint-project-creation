@@ -88,13 +88,31 @@ public sealed class AcumaticaClient : IAcumaticaClient
                 ProjectName = GetString(row, _options.ProjectNameField),
                 CustomerName = GetString(row, _options.CustomerNameField),
                 ProjectManager = GetString(row, _options.ProjectManagerField),
+                ProjectManagerEmail = string.IsNullOrEmpty(_options.ProjectManagerEmailField)
+                    ? null
+                    : GetString(row, _options.ProjectManagerEmailField),
                 Practice = GetString(row, _options.PracticeField),
                 CreatedDateTime = GetDateTime(row, _options.CreatedDateTimeField),
             });
         }
 
-        _logger.LogInformation("Acumatica GI returned {Count} project(s).", results.Count);
-        return results;
+        // Safety net: some GIs expose the created date as a display/computed field that the OData
+        // provider silently ignores in $filter. Re-apply the bound client-side so a GI that returns
+        // everything doesn't cause the whole inquiry to be reprocessed each cycle. Rows with no
+        // parseable created date are kept (we can't prove they're old) and rely on SharePoint dedup.
+        var filtered = results
+            .Where(p => p.CreatedDateTime is null || p.CreatedDateTime > createdAfterUtc)
+            .ToList();
+
+        if (filtered.Count != results.Count)
+        {
+            _logger.LogWarning(
+                "GI returned {Total} rows but {Dropped} were at/before the watermark; the OData $filter may not be applied server-side.",
+                results.Count, results.Count - filtered.Count);
+        }
+
+        _logger.LogInformation("Acumatica GI returned {Count} project(s) after filtering.", filtered.Count);
+        return filtered;
     }
 
     private static string? GetString(JsonElement row, string property)

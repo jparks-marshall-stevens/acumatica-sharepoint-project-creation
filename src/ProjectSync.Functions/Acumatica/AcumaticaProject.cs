@@ -7,6 +7,10 @@ public sealed record AcumaticaProject
     public string? ProjectName { get; init; }
     public string? CustomerName { get; init; }
     public string? ProjectManager { get; init; }
+
+    /// <summary>Project manager's email/UPN, used to resolve a SharePoint People field. Optional.</summary>
+    public string? ProjectManagerEmail { get; init; }
+
     public string? Practice { get; init; }
     public DateTimeOffset? CreatedDateTime { get; init; }
 }

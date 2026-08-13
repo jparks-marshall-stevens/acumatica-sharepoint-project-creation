@@ -14,9 +14,22 @@ public sealed class AcumaticaOptions
     /// <summary>Tenant/company login name (the value you pick on the sign-in screen).</summary>
     public string Tenant { get; set; } = string.Empty;
 
-    // --- OAuth2 (client credentials) ---
+    // --- OAuth2 ---
     public string ClientId { get; set; } = string.Empty;
     public string ClientSecret { get; set; } = string.Empty;
+
+    /// <summary>
+    /// OAuth grant type. "password" = Resource Owner Password Credentials (ROPC), which requires
+    /// <see cref="Username"/>/<see cref="Password"/> and a real Acumatica service account.
+    /// "client_credentials" = machine-to-machine (only if the connected app supports it).
+    /// </summary>
+    public string GrantType { get; set; } = "password";
+
+    /// <summary>Acumatica service-account user name (ROPC only).</summary>
+    public string Username { get; set; } = string.Empty;
+
+    /// <summary>Acumatica service-account password (ROPC only).</summary>
+    public string Password { get; set; } = string.Empty;
 
     /// <summary>OAuth scope. Acumatica typically uses "api" (optionally "offline_access").</summary>
     public string Scope { get; set; } = "api";
@@ -38,8 +51,31 @@ public sealed class AcumaticaOptions
     public string ProjectNameField { get; set; } = "ProjectName";
     public string CustomerNameField { get; set; } = "CustomerName";
     public string ProjectManagerField { get; set; } = "ProjectManager";
+
+    /// <summary>
+    /// Optional GI column holding the project manager's email/UPN. Required only when the SharePoint
+    /// Project Manager column is a People field (see SharePoint:ProjectManagerIsPersonColumn), so the
+    /// person can be resolved reliably. Leave blank if the PM column is plain text.
+    /// </summary>
+    public string ProjectManagerEmailField { get; set; } = string.Empty;
+
     public string PracticeField { get; set; } = "Practice";
 
     /// <summary>Http timeout for Acumatica calls, seconds.</summary>
     public int TimeoutSeconds { get; set; } = 100;
+
+    /// <summary>
+    /// Optional allow-list of practice values to process (case-insensitive). When empty, all
+    /// practices are processed. Projects whose practice is not listed are skipped but still
+    /// advance the watermark, so they are not re-read every cycle.
+    /// e.g. ["Estate &amp; Gift"] to only create document sets for Estate &amp; Gift projects.
+    /// </summary>
+    public List<string> IncludedPractices { get; set; } = new();
+
+    /// <summary>
+    /// Project IDs to always ignore (case-insensitive), regardless of practice. Use for internal
+    /// / system project monikers such as "X" (Non-Project Code). Excluded projects are skipped but
+    /// still advance the watermark.
+    /// </summary>
+    public List<string> ExcludedProjectIds { get; set; } = new();
 }

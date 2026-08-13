@@ -49,13 +49,21 @@ public sealed class AcumaticaTokenProvider
             var tokenUrl = $"{_options.BaseUrl.TrimEnd('/')}/identity/connect/token";
             var form = new Dictionary<string, string>
             {
-                ["grant_type"] = "client_credentials",
+                ["grant_type"] = _options.GrantType,
                 ["client_id"] = _options.ClientId,
                 ["client_secret"] = _options.ClientSecret,
                 ["scope"] = _options.Scope,
             };
 
-            _logger.LogDebug("Requesting Acumatica OAuth token from {TokenUrl}", tokenUrl);
+            // Resource Owner Password Credentials flow: include the service-account credentials.
+            if (string.Equals(_options.GrantType, "password", StringComparison.OrdinalIgnoreCase))
+            {
+                form["username"] = _options.Username;
+                form["password"] = _options.Password;
+            }
+
+            _logger.LogDebug("Requesting Acumatica OAuth token from {TokenUrl} (grant_type={GrantType})",
+                tokenUrl, _options.GrantType);
 
             using var request = new HttpRequestMessage(HttpMethod.Post, tokenUrl)
             {

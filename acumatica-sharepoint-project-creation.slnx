@@ -5,4 +5,10 @@
   <Folder Name="/tests/">
     <Project Path="tests/ProjectSync.Functions.Tests/ProjectSync.Functions.Tests.csproj" />
   </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/AcumaticaConnectivityTest/AcumaticaConnectivityTest.csproj" />
+    <Project Path="tools/CreateOneDocumentSet/CreateOneDocumentSet.csproj" />
+    <Project Path="tools/ProjectSyncDryRun/ProjectSyncDryRun.csproj" />
+    <Project Path="tools/SharePointConnectivityTest/SharePointConnectivityTest.csproj" />
+  </Folder>
 </Solution>
