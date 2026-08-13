@@ -25,11 +25,25 @@ public sealed class ProjectSyncHttpFunction
         [HttpTrigger(AuthorizationLevel.Function, "post", Route = "sync/run")] HttpRequestData request,
         CancellationToken cancellationToken)
     {
-        _logger.LogInformation("Manual ProjectSync run requested.");
+        var query = System.Web.HttpUtility.ParseQueryString(request.Url.Query);
+        var dryRun = bool.TryParse(query["dryRun"], out var d) && d;
+        var onlyProjectId = query["projectId"];
+
+        // ?days=N widens the query window for a dry-run or targeted run (ignored on a normal real run
+        // to avoid accidental reprocessing).
+        DateTimeOffset? overrideSince = null;
+        if ((dryRun || !string.IsNullOrWhiteSpace(onlyProjectId)) && int.TryParse(query["days"], out var days) && days > 0)
+        {
+            overrideSince = DateTimeOffset.UtcNow.AddDays(-days);
+        }
+
+        _logger.LogInformation("Manual ProjectSync run requested (dryRun={DryRun}, days={Days}, projectId={ProjectId}).",
+            dryRun, query["days"] ?? "-", onlyProjectId ?? "-");
 
         try
         {
-            var result = await _processor.RunAsync(cancellationToken);
+            var result = await _processor.RunAsync(
+                new RunOptions { DryRun = dryRun, OverrideSince = overrideSince, OnlyProjectId = onlyProjectId }, cancellationToken);
 
             var response = request.CreateResponse(HttpStatusCode.OK);
             await response.WriteAsJsonAsync(result, cancellationToken);
