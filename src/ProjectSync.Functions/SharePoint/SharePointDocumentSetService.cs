@@ -59,9 +59,9 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
             ?? throw new InvalidOperationException(
                 $"Content type '{_options.DocumentSetContentType}' is not enabled on library '{destination.Library}'.");
 
-        // Name = first N chars of the description; append the project id if that name is already taken.
+        // Name = "{first N chars of customer name} | {project id}" (unique because the id is included).
         var desiredName = SharePointNaming.BuildDocumentSetName(
-            project.ProjectName, project.ProjectId, _options.DocumentSetNameMaxLength);
+            project.CustomerName, project.ProjectId, _options.DocumentSetNameMaxLength);
         var setName = await ResolveUniqueNameAsync(ctx, parentFolder, desiredName, project.ProjectId, cancellationToken);
 
         _logger.LogInformation("Creating document set '{Name}' for project {ProjectId} in {Library} (practice '{Practice}').",
@@ -85,7 +85,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
             siteUrl,
             destination.Library,
             destination.ParentFolder,
-            SharePointNaming.BuildDocumentSetName(project.ProjectName, project.ProjectId, _options.DocumentSetNameMaxLength));
+            SharePointNaming.BuildDocumentSetName(project.CustomerName, project.ProjectId, _options.DocumentSetNameMaxLength));
     }
 
     private PracticeMappingEntry ResolveDestination(string? practice)

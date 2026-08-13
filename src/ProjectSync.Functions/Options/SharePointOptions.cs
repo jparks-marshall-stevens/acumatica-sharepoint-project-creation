@@ -35,10 +35,10 @@ public sealed class SharePointOptions
     public string DocumentSetContentType { get; set; } = "Document Set";
 
     /// <summary>
-    /// Maximum length of the document-set folder name, taken from the start of the project description.
-    /// Colliding names are made unique by appending the project id.
+    /// Number of leading characters of the customer name used in the document-set folder name,
+    /// which is "{customer[..N]} | {project id}".
     /// </summary>
-    public int DocumentSetNameMaxLength { get; set; } = 40;
+    public int DocumentSetNameMaxLength { get; set; } = 10;
 
     /// <summary>When true, set explicit permissions on each document set (project manager + practice leader).</summary>
     public bool SetProjectPermissions { get; set; } = true;

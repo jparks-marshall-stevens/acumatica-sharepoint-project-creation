@@ -7,23 +7,21 @@ public static class SharePointNaming
     private static readonly char[] InvalidNameChars = { '\\', '/', ':', '*', '?', '"', '<', '>', '|', '#', '%' };
 
     /// <summary>
-    /// Builds a document-set folder name from the first <paramref name="maxLength"/> characters of the
-    /// project description, sanitized for SharePoint. Falls back to the project id when the description
-    /// is blank.
+    /// Builds a document-set folder name as "{first N chars of customer name} | {project id}",
+    /// sanitized for SharePoint (the '|' is illegal and becomes '-'). Falls back to just the project id
+    /// when the customer name is blank. Because the (unique) project id is part of the name, names are
+    /// effectively unique.
     /// </summary>
-    public static string BuildDocumentSetName(string? description, string projectId, int maxLength)
+    public static string BuildDocumentSetName(string? customerName, string projectId, int customerMaxLength)
     {
-        var basis = string.IsNullOrWhiteSpace(description) ? projectId : description!;
-        if (maxLength > 0 && basis.Length > maxLength)
+        var customer = (customerName ?? string.Empty).Trim();
+        if (customerMaxLength > 0 && customer.Length > customerMaxLength)
         {
-            basis = basis[..maxLength];
+            customer = customer[..customerMaxLength].Trim();
         }
 
-        var name = SanitizeLeafName(basis);
-        // If truncation/sanitization emptied it, fall back to the (sanitized) project id.
-        return name == "Untitled" && !string.IsNullOrWhiteSpace(projectId)
-            ? SanitizeLeafName(projectId)
-            : name;
+        var raw = string.IsNullOrEmpty(customer) ? projectId : $"{customer} | {projectId}";
+        return SanitizeLeafName(raw);
     }
 
     /// <summary>
