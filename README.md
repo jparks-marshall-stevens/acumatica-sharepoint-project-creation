@@ -80,8 +80,10 @@ user (`Username`/`Password`) plus the connected app's `ClientId`/`ClientSecret`.
 
 ### SharePoint (`SharePoint:*`)
 App-only **certificate** auth (Entra app `SharePoint:ClientId`, tenant `SharePoint:AzureAdTenant`).
-Cert via `CertificateBase64` (+ `CertificatePassword`) — works cross-OS — or `CertificateThumbprint`
-for local dev (cert in `CurrentUser\My`).
+The factory uses **`CertificateBase64`** (+ `CertificatePassword`, a base64 PFX) when it's set,
+otherwise falls back to **`CertificateThumbprint`** (cert in `CurrentUser\My`). Local dev and the
+deployed Windows app both use the **thumbprint** path (base64 left empty) — decoding the base64 PFX
+in-process is unreliable on Windows Consumption (see Deployment). Base64 is the cross-platform/Linux option.
 - `SiteUrl`, `DocumentSetContentType = Project` (a custom Document Set content type).
 - Column **internal** names are space-encoded: `Project_x0020_Id`, `Customer_x0020_Name`,
   `Project_x0020_Name`, `Project_x0020_Manager` (a **People** field, `ProjectManagerIsPersonColumn = true`).
@@ -126,9 +128,15 @@ Deployed to **Windows Consumption** (resource group `rg-projectsync`, East US):
 
 - Function App `func-projectsync-2276c5` — **Windows** Consumption, .NET 10 isolated, Functions v4.
 - Storage `stprojsync2276c5`; App Insights; **Key Vault `kv-projsync-2276c5`**.
-- Secrets (`acumatica-client-secret`, `acumatica-password`, `sharepoint-cert-base64`,
-  `sharepoint-cert-password`) live in Key Vault; the Function App's **system-assigned managed
-  identity** reads them via `@Microsoft.KeyVault(SecretUri=…)` app-setting references.
+- **Acumatica secrets** (`acumatica-client-secret`, `acumatica-password`) live in Key Vault; the
+  Function App's **system-assigned managed identity** reads them via `@Microsoft.KeyVault(SecretUri=…)`
+  app-setting references.
+- **SharePoint cert** is uploaded to the Function App (`az webapp config ssl upload`) and loaded from
+  the store: `WEBSITE_LOAD_CERTIFICATES=<thumbprint>` + `SharePoint__CertificateThumbprint=<thumbprint>`,
+  with `SharePoint__CertificateBase64` empty. This avoids the flaky in-process base64/`EphemeralKeySet`
+  decode on Windows Consumption (which throws `CryptographicException: Bad Data` on some cold starts).
+  Rotate before the cert expires: upload the new PFX, update the thumbprint settings, and refresh the
+  Entra app's public key.
 - App settings use **`__`** separators (env-var form). Deploy with `az functionapp deployment
   source config-zip`.
 - **Failure alert**: an App Insights log alert (`ProjectSync-Errors`) emails jparks@marshall-stevens.com
