@@ -77,6 +77,20 @@ public sealed class SharePointOptions
 
     public string PracticeColumn { get; set; } = "Practice";
 
+    // --- Scoping (HubSpot-sourced) workspace columns ---
+
+    /// <summary>Internal name of the column holding the HubSpot deal id (scoping idempotency key). Auto-created.</summary>
+    public string HubSpotDealIdColumn { get; set; } = "HubSpotDealId";
+
+    /// <summary>Internal name of the column holding the workspace lifecycle status (Scoping/Active). Auto-created.</summary>
+    public string StatusColumn { get; set; } = "Status";
+
+    /// <summary>Status value stamped on a scoping-phase (HubSpot) workspace.</summary>
+    public string ScopingStatusValue { get; set; } = "Scoping";
+
+    /// <summary>Status value stamped on an Acumatica project workspace (the post-scoping / ERP phase).</summary>
+    public string ProjectStatusValue { get; set; } = "Execution";
+
     // --- Client Uploads folder + external "Request files" (upload-only) sharing link ---
 
     /// <summary>

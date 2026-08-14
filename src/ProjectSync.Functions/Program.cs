@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using ProjectSync;
 using ProjectSync.Acumatica;
+using ProjectSync.HubSpot;
 using ProjectSync.Options;
 using ProjectSync.SharePoint;
 using ProjectSync.State;
@@ -26,10 +27,15 @@ var host = new HostBuilder()
         services.Configure<AcumaticaOptions>(configuration.GetSection(AcumaticaOptions.SectionName));
         services.Configure<SharePointOptions>(configuration.GetSection(SharePointOptions.SectionName));
         services.Configure<StateOptions>(configuration.GetSection(StateOptions.SectionName));
+        services.Configure<HubSpotOptions>(configuration.GetSection(HubSpotOptions.SectionName));
 
         // Acumatica: token provider + GI client (typed HttpClients).
         services.AddHttpClient<AcumaticaTokenProvider>();
         services.AddHttpClient<IAcumaticaClient, AcumaticaClient>();
+
+        // HubSpot: OAuth token provider + deals client (scoping-phase source).
+        services.AddHttpClient<HubSpotTokenProvider>();
+        services.AddHttpClient<IHubSpotClient, HubSpotClient>();
 
         // State store (Blob). Falls back to the Functions storage account when no explicit
         // State:ConnectionString is provided.
@@ -58,6 +64,7 @@ var host = new HostBuilder()
         // Orchestration.
         services.AddSingleton(TimeProvider.System);
         services.AddScoped<ProjectSyncProcessor>();
+        services.AddScoped<HubSpotScopingProcessor>();
     })
     .Build();
 

@@ -134,6 +134,7 @@ Console.WriteLine($"    {sharePointOptions.Value.ProjectIdColumn,-24} = {Show(sh
 Console.WriteLine($"    {sharePointOptions.Value.CustomerNameColumn,-24} = {Show(sharePointOptions.Value.CustomerNameColumn)}");
 Console.WriteLine($"    {sharePointOptions.Value.ProjectNameColumn,-24} = {Show(sharePointOptions.Value.ProjectNameColumn)}");
 Console.WriteLine($"    {sharePointOptions.Value.ProjectManagerColumn,-24} = {Show(sharePointOptions.Value.ProjectManagerColumn)}");
+Console.WriteLine($"    {sharePointOptions.Value.StatusColumn,-24} = {Show(sharePointOptions.Value.StatusColumn)}");
 
 var pmResolved = item.FieldValues.TryGetValue(sharePointOptions.Value.ProjectManagerColumn, out var pmVal) && pmVal is FieldUserValue;
 Console.WriteLine();
