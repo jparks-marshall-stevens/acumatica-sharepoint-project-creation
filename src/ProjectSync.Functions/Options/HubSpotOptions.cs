@@ -120,6 +120,14 @@ public sealed class HubSpotOptions
     public int FirstRunLookbackHours { get; set; } = 0;
 
     /// <summary>
+    /// Optional created-date floor: only deals whose CreatedAt is strictly after this are eligible for a
+    /// scoping workspace. Because HubSpot bumps hs_lastmodifieddate constantly, a modified-date watermark
+    /// alone would gradually pick up pre-existing open deals; this floor limits creation to deals created
+    /// from go-live onward. Null = no floor (all in-scope deals eligible).
+    /// </summary>
+    public DateTimeOffset? CreatedAfter { get; set; }
+
+    /// <summary>
     /// Small overlap (minutes) subtracted from the watermark on each poll, guarding against clock skew /
     /// modification-commit latency so a deal changed right at the boundary isn't missed.
     /// </summary>

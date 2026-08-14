@@ -56,12 +56,15 @@ public sealed class HubSpotScopingProcessor
 
         var deals = await _hubspot.GetDealsModifiedAfterAsync(queryFrom, _options.MaxDealsPerPoll, cancellationToken);
 
-        // Practice scope (client-side, contains-match against the multi-select practices property).
+        // Practice scope (client-side, contains-match against the multi-select practices property),
+        // plus an optional created-date floor so pre-existing open deals aren't backfilled just because
+        // HubSpot bumped their modified date.
         var included = _options.IncludedPractices;
-        var inScope = included.Count == 0
-            ? deals
-            : deals.Where(d => included.Any(p =>
-                (d.Practice ?? string.Empty).Contains(p, StringComparison.OrdinalIgnoreCase))).ToList();
+        var floor = _options.CreatedAfter;
+        var inScope = deals.Where(d =>
+                (included.Count == 0 || included.Any(p => (d.Practice ?? string.Empty).Contains(p, StringComparison.OrdinalIgnoreCase))) &&
+                (floor is null || (d.CreatedAt is { } created && created > floor)))
+            .ToList();
 
         // Process oldest-modified first so a mid-batch failure holds the watermark just before the
         // offending deal (the rest retries next cycle).
