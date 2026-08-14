@@ -9,4 +9,20 @@ public interface IAcumaticaClient
     Task<IReadOnlyList<AcumaticaProject>> GetProjectsCreatedAfterAsync(
         DateTimeOffset createdAfterUtc,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Returns the distinct team-member emails for a project, from the team GI. Empty if no team GI
+    /// is configured or the project has no team.
+    /// </summary>
+    Task<IReadOnlyList<string>> GetTeamEmailsAsync(string projectId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Returns every team row (project id + email + modified date) from the team GI. The reconcile
+    /// derives both "which projects changed since the watermark" and each project's full current team
+    /// from this single read. Empty if no team GI is configured.
+    /// </summary>
+    Task<IReadOnlyList<TeamMemberRow>> GetTeamRowsAsync(CancellationToken cancellationToken);
 }
+
+/// <summary>One row from the team GI: a person on a project, with the link's last-modified date.</summary>
+public sealed record TeamMemberRow(string ProjectId, string Email, DateTimeOffset? ModifiedOn);

@@ -155,7 +155,10 @@ public sealed class ProjectSyncProcessor
                 }
                 else
                 {
-                    var result = await _sharePoint.EnsureProjectDocumentSetAsync(project, cancellationToken);
+                    // Enrich with the project team (for permissions) just before writing.
+                    var teamEmails = await _acumatica.GetTeamEmailsAsync(project.ProjectId, cancellationToken);
+                    var enriched = project with { TeamEmails = teamEmails };
+                    var result = await _sharePoint.EnsureProjectDocumentSetAsync(enriched, cancellationToken);
                     if (result.Created)
                     {
                         created++;
@@ -205,6 +208,100 @@ public sealed class ProjectSyncProcessor
             Watermark = watermark,
             Plan = plan,
         };
+    }
+
+    private const string ReconcileTeamWatermark = "reconcile-team";
+
+    /// <summary>
+    /// Incremental reconcile: uses the team GI's modified date to touch only projects whose team
+    /// changed since the last pass. Short-circuits to zero SharePoint work when nothing changed.
+    /// </summary>
+    public async Task<ReconcileResult> ReconcileIncrementalAsync(CancellationToken cancellationToken)
+    {
+        var teamRows = await _acumatica.GetTeamRowsAsync(cancellationToken);
+        var watermark = await _lastRunStore.GetWatermarkAsync(ReconcileTeamWatermark, cancellationToken);
+
+        var changed = teamRows
+            .Where(r => r.ModifiedOn is { } m && (watermark is null || m > watermark))
+            .Select(r => r.ProjectId.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (changed.Count == 0)
+        {
+            _logger.LogInformation("Reconcile (incremental): no team changes since {Watermark:o}.", watermark);
+            // Establish the baseline on first run so we don't reprocess history every cycle.
+            if (watermark is null)
+            {
+                await _lastRunStore.SetWatermarkAsync(ReconcileTeamWatermark, MaxModified(teamRows), cancellationToken);
+            }
+            return new ReconcileResult();
+        }
+
+        var desired = await BuildDesiredProjectsAsync(teamRows, cancellationToken);
+        var result = await _sharePoint.ReconcileAsync(desired, changed, cancellationToken);
+        await _lastRunStore.SetWatermarkAsync(ReconcileTeamWatermark, MaxModified(teamRows), cancellationToken);
+
+        _logger.LogInformation("Reconcile (incremental): {Changed} team-changed project(s); updated {Updated}, unchanged {Unchanged}.",
+            changed.Count, result.Updated, result.Unchanged);
+        return result;
+    }
+
+    /// <summary>Daily full reconcile of every tracked document set (signature-gated; catches removals + metadata).</summary>
+    public async Task<ReconcileResult> ReconcileFullAsync(CancellationToken cancellationToken)
+    {
+        var teamRows = await _acumatica.GetTeamRowsAsync(cancellationToken);
+        var desired = await BuildDesiredProjectsAsync(teamRows, cancellationToken);
+        var result = await _sharePoint.ReconcileAsync(desired, onlyProjectIds: null, cancellationToken);
+
+        // A full sweep covers everything up to now — advance the incremental cursor too.
+        await _lastRunStore.SetWatermarkAsync(ReconcileTeamWatermark, MaxModified(teamRows), cancellationToken);
+
+        _logger.LogInformation("Reconcile (full): considered {Considered}, updated {Updated}, unchanged {Unchanged}, notTracked {NotTracked}.",
+            result.Considered, result.Updated, result.Unchanged, result.NotTracked);
+        return result;
+    }
+
+    private DateTimeOffset MaxModified(IReadOnlyList<TeamMemberRow> teamRows)
+        => teamRows.Where(r => r.ModifiedOn is not null)
+            .Select(r => r.ModifiedOn!.Value)
+            .DefaultIfEmpty(_timeProvider.GetUtcNow())
+            .Max();
+
+    /// <summary>Builds the desired projects (included practices, enriched with their current team) from the GIs.</summary>
+    private async Task<IReadOnlyList<AcumaticaProject>> BuildDesiredProjectsAsync(
+        IReadOnlyList<TeamMemberRow> teamRows, CancellationToken cancellationToken)
+    {
+        var teamByProject = teamRows
+            .GroupBy(r => r.ProjectId.Trim(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                g => g.Key,
+                g => (IReadOnlyList<string>)g.Select(r => r.Email.Trim())
+                    .Where(e => !string.IsNullOrWhiteSpace(e))
+                    .Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                StringComparer.OrdinalIgnoreCase);
+
+        // All projects (no created bound), then the same include/exclude filters as the create path.
+        var all = await _acumatica.GetProjectsCreatedAfterAsync(
+            new DateTimeOffset(2000, 1, 1, 0, 0, 0, TimeSpan.Zero), cancellationToken);
+
+        var desired = new List<AcumaticaProject>();
+        foreach (var p in all)
+        {
+            if (_excludedProjectIds.Contains(p.ProjectId.Trim()))
+            {
+                continue;
+            }
+
+            if (_includedPractices.Count > 0 && !_includedPractices.Contains((p.Practice ?? string.Empty).Trim()))
+            {
+                continue;
+            }
+
+            var team = teamByProject.TryGetValue(p.ProjectId.Trim(), out var t) ? t : Array.Empty<string>();
+            desired.Add(p with { TeamEmails = team });
+        }
+
+        return desired;
     }
 }
 

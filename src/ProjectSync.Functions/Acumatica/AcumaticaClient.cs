@@ -115,6 +115,104 @@ public sealed class AcumaticaClient : IAcumaticaClient
         return filtered;
     }
 
+    public async Task<IReadOnlyList<string>> GetTeamEmailsAsync(string projectId, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(_options.TeamGenericInquiryName))
+        {
+            return Array.Empty<string>();
+        }
+
+        var token = await _tokenProvider.GetAccessTokenAsync(cancellationToken);
+        var baseUrl = _options.BaseUrl.TrimEnd('/');
+        var safeId = projectId.Replace("'", "''");
+        var url = $"{baseUrl}/t/{Uri.EscapeDataString(_options.Tenant)}/api/odata/gi/" +
+                  $"{Uri.EscapeDataString(_options.TeamGenericInquiryName)}" +
+                  $"?$filter={Uri.EscapeDataString($"{_options.TeamProjectIdField} eq '{safeId}'")}";
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            throw new InvalidOperationException($"Acumatica team GI query failed ({(int)response.StatusCode}): {body}");
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        if (!doc.RootElement.TryGetProperty("value", out var valueArray) || valueArray.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<string>();
+        }
+
+        // Server-side $filter isn't always honored by GI OData, so re-check the project id client-side.
+        var emails = new List<string>();
+        foreach (var row in valueArray.EnumerateArray())
+        {
+            var rowProject = GetString(row, _options.TeamProjectIdField)?.Trim();
+            if (!string.Equals(rowProject, projectId.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var email = GetString(row, _options.TeamEmailField)?.Trim();
+            if (!string.IsNullOrWhiteSpace(email))
+            {
+                emails.Add(email);
+            }
+        }
+
+        return emails.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    public async Task<IReadOnlyList<TeamMemberRow>> GetTeamRowsAsync(CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(_options.TeamGenericInquiryName))
+        {
+            return Array.Empty<TeamMemberRow>();
+        }
+
+        var token = await _tokenProvider.GetAccessTokenAsync(cancellationToken);
+        var baseUrl = _options.BaseUrl.TrimEnd('/');
+        var url = $"{baseUrl}/t/{Uri.EscapeDataString(_options.Tenant)}/api/odata/gi/" +
+                  $"{Uri.EscapeDataString(_options.TeamGenericInquiryName)}";
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            throw new InvalidOperationException($"Acumatica team GI query failed ({(int)response.StatusCode}): {body}");
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        if (!doc.RootElement.TryGetProperty("value", out var valueArray) || valueArray.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<TeamMemberRow>();
+        }
+
+        var rows = new List<TeamMemberRow>(valueArray.GetArrayLength());
+        foreach (var row in valueArray.EnumerateArray())
+        {
+            var pid = GetString(row, _options.TeamProjectIdField)?.Trim();
+            var email = GetString(row, _options.TeamEmailField)?.Trim();
+            if (string.IsNullOrWhiteSpace(pid) || string.IsNullOrWhiteSpace(email))
+            {
+                continue;
+            }
+
+            rows.Add(new TeamMemberRow(pid!, email!, GetDateTime(row, _options.TeamModifiedField)));
+        }
+
+        return rows;
+    }
+
     private static string? GetString(JsonElement row, string property)
     {
         if (string.IsNullOrEmpty(property) || !row.TryGetProperty(property, out var el))

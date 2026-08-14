@@ -10,15 +10,18 @@ namespace ProjectSync.SharePoint;
 public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
 {
     private readonly SharePointContextFactory _contextFactory;
+    private readonly GraphUploadLinkService _uploadLinks;
     private readonly SharePointOptions _options;
     private readonly ILogger<SharePointDocumentSetService> _logger;
 
     public SharePointDocumentSetService(
         SharePointContextFactory contextFactory,
+        GraphUploadLinkService uploadLinks,
         IOptions<SharePointOptions> options,
         ILogger<SharePointDocumentSetService> logger)
     {
         _contextFactory = contextFactory;
+        _uploadLinks = uploadLinks;
         _options = options.Value;
         _logger = logger;
     }
@@ -43,7 +46,8 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         {
             _logger.LogInformation("Document set for project {ProjectId} already exists at {Url}; updating metadata + permissions.",
                 project.ProjectId, existing);
-            await ApplyMetadataAsync(ctx, existing, project, cancellationToken);
+            var sig = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail);
+            await ApplyMetadataAsync(ctx, existing, project, sig, cancellationToken);
             await ApplyPermissionsAsync(ctx, existing, project, destination, cancellationToken);
             return new DocumentSetResult(Created: false, existing);
         }
@@ -71,8 +75,16 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         await ctx.ExecuteQueryRetryAsync();
 
         var serverRelativeUrl = created.Value;
-        await ApplyMetadataAsync(ctx, serverRelativeUrl, project, cancellationToken);
+        var newSig = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail);
+        await ApplyMetadataAsync(ctx, serverRelativeUrl, project, newSig, cancellationToken);
         await ApplyPermissionsAsync(ctx, serverRelativeUrl, project, destination, cancellationToken);
+
+        // Client uploads folder + external "Request files" link. Create-once: only on first creation,
+        // after permissions (so the child-scoped sharing link isn't cleared by the inheritance break).
+        if (_options.CreateClientUploadLink)
+        {
+            await EnsureClientUploadsAsync(ctx, list, serverRelativeUrl, siteUrl, cancellationToken);
+        }
 
         return new DocumentSetResult(Created: true, serverRelativeUrl);
     }
@@ -86,6 +98,130 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
             destination.Library,
             destination.ParentFolder,
             SharePointNaming.BuildDocumentSetName(project.CustomerName, project.ProjectId, _options.DocumentSetNameMaxLength));
+    }
+
+    public async Task<ReconcileResult> ReconcileAsync(
+        IReadOnlyList<AcumaticaProject> desiredProjects,
+        IReadOnlySet<string>? onlyProjectIds,
+        CancellationToken cancellationToken)
+    {
+        int considered = 0, updated = 0, unchanged = 0, notTracked = 0;
+
+        // One SharePoint context per (site, library) — currently a single group (Estate & Gift).
+        var groups = desiredProjects
+            .Select(p => (Project: p, Dest: ResolveDestination(p.Practice)))
+            .GroupBy(x => (
+                Site: string.IsNullOrWhiteSpace(x.Dest.SiteUrl) ? _options.SiteUrl : x.Dest.SiteUrl!,
+                x.Dest.Library));
+
+        foreach (var group in groups)
+        {
+            using var ctx = await _contextFactory.CreateContextAsync(group.Key.Site);
+            var list = ctx.Web.Lists.GetByTitle(group.Key.Library);
+            ctx.Load(list, l => l.RootFolder.ServerRelativeUrl);
+            await ctx.ExecuteQueryRetryAsync();
+
+            await EnsureSignatureColumnAsync(ctx, list);
+            var tracked = await GetTrackedDocSetsAsync(ctx, list, cancellationToken);
+
+            foreach (var x in group)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (onlyProjectIds is not null && !onlyProjectIds.Contains(x.Project.ProjectId))
+                {
+                    continue;
+                }
+
+                if (!tracked.TryGetValue(x.Project.ProjectId, out var t))
+                {
+                    notTracked++; // untracked project — no backfill
+                    continue;
+                }
+
+                considered++;
+                var desiredSig = ReconcileSignature.Compute(x.Project, x.Dest.PracticeLeaderEmail);
+                if (string.Equals(desiredSig, t.Signature, StringComparison.OrdinalIgnoreCase))
+                {
+                    unchanged++;
+                    continue;
+                }
+
+                _logger.LogInformation("Reconcile: project {ProjectId} changed — re-applying metadata + permissions.", x.Project.ProjectId);
+                await ApplyMetadataAsync(ctx, t.Url, x.Project, desiredSig, cancellationToken);
+                await ApplyPermissionsAsync(ctx, t.Url, x.Project, x.Dest, cancellationToken);
+                updated++;
+            }
+        }
+
+        return new ReconcileResult { Considered = considered, Updated = updated, Unchanged = unchanged, NotTracked = notTracked };
+    }
+
+    /// <summary>Ensures the hidden signature column exists on the library (idempotent).</summary>
+    private async Task EnsureSignatureColumnAsync(ClientContext ctx, List list)
+    {
+        var col = _options.SignatureColumn;
+        if (string.IsNullOrWhiteSpace(col))
+        {
+            return;
+        }
+
+        ctx.Load(list.Fields, fs => fs.Include(f => f.InternalName));
+        await ctx.ExecuteQueryRetryAsync();
+        if (list.Fields.Any(f => f.InternalName == col))
+        {
+            return;
+        }
+
+        list.Fields.AddFieldAsXml(
+            $"<Field Type='Text' Name='{col}' StaticName='{col}' DisplayName='{col}' Hidden='TRUE' Group='ProjectSync'/>",
+            addToDefaultView: false, options: AddFieldOptions.AddFieldInternalNameHint);
+        await ctx.ExecuteQueryRetryAsync();
+        _logger.LogInformation("Created reconcile signature column '{Column}'.", col);
+    }
+
+    /// <summary>Bulk-reads all tracked document sets: project id → (folder url, stored signature).</summary>
+    private async Task<Dictionary<string, (string Url, string? Signature)>> GetTrackedDocSetsAsync(
+        ClientContext ctx, List list, CancellationToken cancellationToken)
+    {
+        var result = new Dictionary<string, (string, string?)>(StringComparer.OrdinalIgnoreCase);
+        var pidCol = _options.ProjectIdColumn;
+        var sigCol = _options.SignatureColumn;
+        ListItemCollectionPosition? position = null;
+        do
+        {
+            var query = new CamlQuery
+            {
+                ViewXml =
+                    "<View Scope='RecursiveAll'><Query><Where><And>" +
+                    "<Eq><FieldRef Name='FSObjType'/><Value Type='Integer'>1</Value></Eq>" +
+                    $"<IsNotNull><FieldRef Name='{pidCol}'/></IsNotNull>" +
+                    "</And></Where></Query>" +
+                    $"<ViewFields><FieldRef Name='{pidCol}'/><FieldRef Name='{sigCol}'/><FieldRef Name='FileRef'/></ViewFields>" +
+                    "<RowLimit Paged='TRUE'>2000</RowLimit></View>",
+                ListItemCollectionPosition = position,
+            };
+            var items = list.GetItems(query);
+            ctx.Load(items, c => c.ListItemCollectionPosition,
+                c => c.Include(i => i["FileRef"], i => i[pidCol], i => i[sigCol]));
+            await ctx.ExecuteQueryRetryAsync();
+
+            foreach (var it in items)
+            {
+                var pid = it[pidCol]?.ToString()?.Trim();
+                if (string.IsNullOrWhiteSpace(pid))
+                {
+                    continue;
+                }
+
+                var sig = it.FieldValues.TryGetValue(sigCol, out var s) ? s?.ToString() : null;
+                result[pid!] = (it["FileRef"]?.ToString() ?? string.Empty, sig);
+            }
+
+            position = items.ListItemCollectionPosition;
+        }
+        while (position is not null);
+
+        return result;
     }
 
     private PracticeMappingEntry ResolveDestination(string? practice)
@@ -181,7 +317,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
     }
 
     private async Task ApplyMetadataAsync(
-        ClientContext ctx, string serverRelativeUrl, AcumaticaProject project, CancellationToken cancellationToken)
+        ClientContext ctx, string serverRelativeUrl, AcumaticaProject project, string? signature, CancellationToken cancellationToken)
     {
         var folder = ctx.Web.GetFolderByServerRelativeUrl(ToServerRelative(serverRelativeUrl));
         var item = folder.ListItemAllFields;
@@ -214,6 +350,9 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         {
             SetIfPresent(item, _options.ProjectManagerColumn, project.ProjectManager);
         }
+
+        // Stamp the reconcile signature so an unchanged project is skipped on later sweeps.
+        SetIfPresent(item, _options.SignatureColumn, signature);
 
         item.Update();
         await ctx.ExecuteQueryRetryAsync();
@@ -294,28 +433,39 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
             ctx.Load(web.AssociatedOwnerGroup);
             await ctx.ExecuteQueryRetryAsync();
 
+            // Everyone who should get the grant level: PM, practice leader, and the project team.
             var pmIdentity = !string.IsNullOrWhiteSpace(project.ProjectManagerEmail)
                 ? project.ProjectManagerEmail
                 : project.ProjectManager;
-            var pmUser = await TryEnsureUserAsync(ctx, pmIdentity);
-            var leaderUser = await TryEnsureUserAsync(ctx, destination.PracticeLeaderEmail);
+            var identities = new List<string?> { pmIdentity, destination.PracticeLeaderEmail };
+            identities.AddRange(project.TeamEmails);
+
+            // Resolve to distinct site users (fail-soft; external/unresolvable emails are skipped).
+            var grantees = new List<User>();
+            var seenUserIds = new HashSet<int>();
+            foreach (var identity in identities)
+            {
+                var user = await TryEnsureUserAsync(ctx, identity);
+                if (user is not null && seenUserIds.Add(user.Id))
+                {
+                    grantees.Add(user);
+                }
+            }
 
             if (_options.RestrictPermissions)
             {
                 // Clean slate, then re-grant. Site collection admins / the app identity retain access.
-                item.BreakRoleInheritance(copyRoleAssignments: false, clearSubscopes: true);
+                // When client-upload links are enabled we must NOT clear sub-scopes, or a later reconcile
+                // would wipe the child "Client Uploads" folder's upload link (which is create-once). The
+                // doc set's own permissions are still fully reset either way.
+                item.BreakRoleInheritance(copyRoleAssignments: false, clearSubscopes: !_options.CreateClientUploadLink);
                 var ownerBinding = new RoleDefinitionBindingCollection(ctx);
                 ownerBinding.Add(fullControl);
                 item.RoleAssignments.Add(web.AssociatedOwnerGroup, ownerBinding);
             }
 
-            foreach (var user in new[] { pmUser, leaderUser })
+            foreach (var user in grantees)
             {
-                if (user is null)
-                {
-                    continue;
-                }
-
                 var binding = new RoleDefinitionBindingCollection(ctx);
                 binding.Add(grantRole);
                 item.RoleAssignments.Add(user, binding);
@@ -323,14 +473,95 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
 
             await ctx.ExecuteQueryRetryAsync();
             _logger.LogInformation(
-                "Set permissions on document set for project {ProjectId} (restrict={Restrict}, pm={Pm}, leader={Leader}).",
-                project.ProjectId, _options.RestrictPermissions, pmUser is not null, leaderUser is not null);
+                "Set permissions on project {ProjectId}: {Count} user(s) at {Level} + Owners FullControl (team members offered: {TeamCount}).",
+                project.ProjectId, grantees.Count, _options.PermissionLevel, project.TeamEmails.Count);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex,
                 "Failed to set permissions on the document set for project {ProjectId}. The set exists with its current permissions; re-run to retry.",
                 project.ProjectId);
+        }
+    }
+
+    /// <summary>
+    /// Creates the "Client Uploads" subfolder inside a document set and mints an anonymous upload-only
+    /// ("Request files") link for it via Graph, stamping the URL into <see cref="SharePointOptions.ClientUploadLinkColumn"/>.
+    /// Fully fail-soft: a failure here is logged but does not fail document-set creation.
+    /// </summary>
+    private async Task EnsureClientUploadsAsync(
+        ClientContext ctx, List list, string docSetServerRelativeUrl, string siteUrl, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var folderName = SharePointNaming.SanitizeLeafName(_options.ClientUploadsFolderName);
+            var docSetFolder = ctx.Web.GetFolderByServerRelativeUrl(ToServerRelative(docSetServerRelativeUrl));
+            var uploads = docSetFolder.Folders.Add(folderName);
+            ctx.Load(uploads, f => f.ServerRelativeUrl);
+            ctx.Load(list, l => l.RootFolder.ServerRelativeUrl);
+            await ctx.ExecuteQueryRetryAsync();
+
+            var link = await _uploadLinks.CreateUploadLinkAsync(
+                siteUrl, list.RootFolder.ServerRelativeUrl, uploads.ServerRelativeUrl, cancellationToken);
+
+            var col = _options.ClientUploadLinkColumn;
+            if (!string.IsNullOrWhiteSpace(link) && !string.IsNullOrWhiteSpace(col))
+            {
+                var field = await EnsureUploadLinkColumnAsync(ctx, list, col);
+
+                // Stamp the link on the document set item (the folder the metadata lives on), not the subfolder.
+                var docItem = ctx.Web.GetFolderByServerRelativeUrl(ToServerRelative(docSetServerRelativeUrl)).ListItemAllFields;
+                ctx.Load(docItem);
+                await ctx.ExecuteQueryRetryAsync();
+
+                if (docItem.FieldValues.ContainsKey(col))
+                {
+                    // Hyperlink (URL) columns need a FieldUrlValue; a plain text column takes the string.
+                    docItem[col] = field?.FieldTypeKind == FieldType.URL
+                        ? new FieldUrlValue { Url = link, Description = "Client uploads (Request files link)" }
+                        : link;
+                    docItem.Update();
+                    await ctx.ExecuteQueryRetryAsync();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Failed to create the Client Uploads folder/link for document set at {Url}; the set exists without it.",
+                docSetServerRelativeUrl);
+        }
+    }
+
+    /// <summary>
+    /// Ensures the client-upload-link column exists (as a Hyperlink/URL field), creating it if missing —
+    /// analogous to the signature column. Returns the field (with its type loaded) or null on failure.
+    /// </summary>
+    private async Task<Field?> EnsureUploadLinkColumnAsync(ClientContext ctx, List list, string col)
+    {
+        try
+        {
+            ctx.Load(list.Fields, fs => fs.Include(f => f.InternalName, f => f.FieldTypeKind));
+            await ctx.ExecuteQueryRetryAsync();
+
+            var existing = list.Fields.FirstOrDefault(f => f.InternalName == col);
+            if (existing is not null)
+            {
+                return existing;
+            }
+
+            var added = list.Fields.AddFieldAsXml(
+                $"<Field Type='URL' Name='{col}' StaticName='{col}' DisplayName='{col}' Format='Hyperlink' Group='ProjectSync'/>",
+                addToDefaultView: true, options: AddFieldOptions.AddFieldInternalNameHint);
+            ctx.Load(added, f => f.FieldTypeKind);
+            await ctx.ExecuteQueryRetryAsync();
+            _logger.LogInformation("Created client-upload-link column '{Column}'.", col);
+            return added;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not ensure client-upload-link column '{Column}'; the link won't be stamped.", col);
+            return null;
         }
     }
 

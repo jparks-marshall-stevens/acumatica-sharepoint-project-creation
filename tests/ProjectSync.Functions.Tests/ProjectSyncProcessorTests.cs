@@ -21,14 +21,20 @@ public class ProjectSyncProcessorTests
     private readonly StateOptions _state = new() { FirstRunLookbackHours = 24, OverlapMinutes = 5 };
     private readonly AcumaticaOptions _acumaticaOptions = new();
 
-    private ProjectSyncProcessor CreateSut() => new(
-        _acumatica.Object,
+    private ProjectSyncProcessor CreateSut()
+    {
+        // Default: no team members unless a test overrides.
+        _acumatica.Setup(a => a.GetTeamEmailsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Array.Empty<string>());
+        return new(
+            _acumatica.Object,
         _sharePoint.Object,
         _lastRun.Object,
         Microsoft.Extensions.Options.Options.Create(_state),
         Microsoft.Extensions.Options.Options.Create(_acumaticaOptions),
-        _time,
-        NullLogger<ProjectSyncProcessor>.Instance);
+            _time,
+            NullLogger<ProjectSyncProcessor>.Instance);
+    }
 
     private static AcumaticaProject Project(string id, DateTimeOffset created, string practice = "Advisory") => new()
     {
@@ -274,5 +280,68 @@ public class ProjectSyncProcessorTests
 
         Assert.Equal(1, result.Created);
         Assert.Equal(1, result.Updated);
+    }
+
+    [Fact]
+    public async Task ReconcileIncremental_NoTeamChanges_ShortCircuits_NoSharePoint()
+    {
+        var wm = Now.AddMinutes(-30);
+        _acumatica.Setup(a => a.GetTeamRowsAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new[] { new TeamMemberRow("P1", "a@x.com", Now.AddHours(-1)) }); // older than watermark
+        _lastRun.Setup(s => s.GetWatermarkAsync("reconcile-team", It.IsAny<CancellationToken>())).ReturnsAsync(wm);
+
+        var result = await CreateSut().ReconcileIncrementalAsync(CancellationToken.None);
+
+        Assert.Equal(0, result.Updated);
+        _sharePoint.Verify(s => s.ReconcileAsync(It.IsAny<IReadOnlyList<AcumaticaProject>>(), It.IsAny<IReadOnlySet<string>>(), It.IsAny<CancellationToken>()), Times.Never);
+        _acumatica.Verify(a => a.GetProjectsCreatedAfterAsync(It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ReconcileIncremental_TeamChanged_ReconcilesOnlyChangedIds()
+    {
+        var wm = Now.AddMinutes(-30);
+        _acumaticaOptions.IncludedPractices = new List<string> { "Estate & Gift" };
+        _acumatica.Setup(a => a.GetTeamRowsAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new[]
+            {
+                new TeamMemberRow("P1", "a@x.com", Now.AddMinutes(-5)),  // changed
+                new TeamMemberRow("P2", "b@x.com", Now.AddHours(-2)),    // unchanged
+            });
+        _lastRun.Setup(s => s.GetWatermarkAsync("reconcile-team", It.IsAny<CancellationToken>())).ReturnsAsync(wm);
+        _lastRun.Setup(s => s.SetWatermarkAsync("reconcile-team", It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+        _acumatica.Setup(a => a.GetProjectsCreatedAfterAsync(It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new[] { Project("P1", Now, "Estate & Gift"), Project("P2", Now, "Estate & Gift") });
+
+        IReadOnlySet<string>? capturedIds = null;
+        _sharePoint.Setup(s => s.ReconcileAsync(It.IsAny<IReadOnlyList<AcumaticaProject>>(), It.IsAny<IReadOnlySet<string>>(), It.IsAny<CancellationToken>()))
+            .Callback<IReadOnlyList<AcumaticaProject>, IReadOnlySet<string>?, CancellationToken>((_, ids, _) => capturedIds = ids)
+            .ReturnsAsync(new ReconcileResult { Updated = 1 });
+
+        await CreateSut().ReconcileIncrementalAsync(CancellationToken.None);
+
+        Assert.NotNull(capturedIds);
+        Assert.Contains("P1", capturedIds!);
+        Assert.DoesNotContain("P2", capturedIds!);
+        _lastRun.Verify(s => s.SetWatermarkAsync("reconcile-team", It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ReconcileFull_PassesNullIds_ForAllTracked()
+    {
+        _acumaticaOptions.IncludedPractices = new List<string> { "Estate & Gift" };
+        _acumatica.Setup(a => a.GetTeamRowsAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Array.Empty<TeamMemberRow>());
+        _acumatica.Setup(a => a.GetProjectsCreatedAfterAsync(It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new[] { Project("P1", Now, "Estate & Gift") });
+        _lastRun.Setup(s => s.SetWatermarkAsync("reconcile-team", It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+
+        var sawNull = false;
+        _sharePoint.Setup(s => s.ReconcileAsync(It.IsAny<IReadOnlyList<AcumaticaProject>>(), It.IsAny<IReadOnlySet<string>>(), It.IsAny<CancellationToken>()))
+            .Callback<IReadOnlyList<AcumaticaProject>, IReadOnlySet<string>?, CancellationToken>((_, ids, _) => sawNull = ids is null)
+            .ReturnsAsync(new ReconcileResult { Considered = 1, Updated = 1 });
+
+        await CreateSut().ReconcileFullAsync(CancellationToken.None);
+
+        Assert.True(sawNull); // full sweep reconciles all tracked (onlyProjectIds == null)
     }
 }

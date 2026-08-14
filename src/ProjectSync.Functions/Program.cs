@@ -52,6 +52,7 @@ var host = new HostBuilder()
 
         // SharePoint.
         services.AddSingleton<SharePointContextFactory>();
+        services.AddSingleton<ProjectSync.SharePoint.GraphUploadLinkService>();
         services.AddSingleton<ISharePointDocumentSetService, SharePointDocumentSetService>();
 
         // Orchestration.

@@ -15,6 +15,26 @@ public interface ISharePointDocumentSetService
     /// from configuration only — no SharePoint connection. Used by dry-run.
     /// </summary>
     DocumentSetPlan PlanDocumentSet(AcumaticaProject project);
+
+    /// <summary>
+    /// Reconciles metadata + permissions of ALREADY-TRACKED document sets against the desired state.
+    /// Only sets whose signature changed are re-applied (a single bulk read finds them). Projects
+    /// without an existing set are skipped (no backfill). When <paramref name="onlyProjectIds"/> is
+    /// non-null, only those ids are considered (incremental); null reconciles all tracked (daily sweep).
+    /// </summary>
+    Task<ReconcileResult> ReconcileAsync(
+        IReadOnlyList<AcumaticaProject> desiredProjects,
+        IReadOnlySet<string>? onlyProjectIds,
+        CancellationToken cancellationToken);
+}
+
+/// <summary>Outcome of a reconcile pass.</summary>
+public sealed record ReconcileResult
+{
+    public int Considered { get; init; }
+    public int Updated { get; init; }
+    public int Unchanged { get; init; }
+    public int NotTracked { get; init; }
 }
 
 public sealed record DocumentSetResult(bool Created, string ServerRelativeUrl);

@@ -44,7 +44,8 @@ using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(acumaticaOption
 var tokenProvider = new AcumaticaTokenProvider(http, acumaticaOptions, loggerFactory.CreateLogger<AcumaticaTokenProvider>());
 var acumatica = new AcumaticaClient(http, tokenProvider, acumaticaOptions, loggerFactory.CreateLogger<AcumaticaClient>());
 var contextFactory = new SharePointContextFactory(sharePointOptions, loggerFactory.CreateLogger<SharePointContextFactory>());
-var sharePoint = new SharePointDocumentSetService(contextFactory, sharePointOptions, loggerFactory.CreateLogger<SharePointDocumentSetService>());
+var uploadLinks = new GraphUploadLinkService(contextFactory, sharePointOptions, loggerFactory.CreateLogger<GraphUploadLinkService>());
+var sharePoint = new SharePointDocumentSetService(contextFactory, uploadLinks, sharePointOptions, loggerFactory.CreateLogger<SharePointDocumentSetService>());
 
 var processor = new ProjectSyncProcessor(
     acumatica, sharePoint, new InMemoryLastRunStore(), stateOptions, acumaticaOptions,
@@ -155,4 +156,6 @@ file sealed class InMemoryLastRunStore : ILastRunStore
 {
     public Task<DateTimeOffset?> GetLastRunAsync(CancellationToken cancellationToken) => Task.FromResult<DateTimeOffset?>(null);
     public Task SetLastRunAsync(DateTimeOffset value, CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task<DateTimeOffset?> GetWatermarkAsync(string name, CancellationToken cancellationToken) => Task.FromResult<DateTimeOffset?>(null);
+    public Task SetWatermarkAsync(string name, DateTimeOffset value, CancellationToken cancellationToken) => Task.CompletedTask;
 }
