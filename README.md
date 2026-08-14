@@ -1,11 +1,21 @@
 # acumatica-sharepoint-project-creation
 
-A **.NET 10 (isolated worker) Azure Function** that polls Acumatica every 15 minutes for
-newly-created projects and, for each one in a configured practice, creates a **SharePoint
-Document Set** — named from the project description, stamped with metadata, and permissioned
-to the project manager and practice leader.
+A **.NET 10 (isolated worker) Azure Function** app that keeps **SharePoint Document Set**
+workspaces in sync with two source systems, across an engagement's lifecycle:
 
-Currently scoped to the **Estate & Gift** practice → the **GiftEstate** SharePoint site.
+- **HubSpot** (pre-ERP **scoping** phase) — polls deals in scope and creates a workspace
+  (`Status = Scoping`) keyed on the HubSpot deal id.
+- **Acumatica** (ERP **execution** phase) — polls newly-created projects and creates a workspace
+  (`Status = Execution`), then **reconciles** existing ones as the project team / PM / description change.
+
+Each workspace is stamped with metadata, permissioned to the right people, and (optionally) gets a
+`Client Uploads` subfolder with an anonymous **Request-files** link. Currently scoped to the
+**Estate & Gift** practice → the **GiftEstate** SharePoint site.
+
+The two sources run on **independent timers** (they hit different systems and write different,
+idempotent doc sets). A shared `Status` column distinguishes the phases and sets up in-place
+**promotion** (Scoping → Execution) when a deal becomes a project — see
+[`docs/hubspot-scoping-integration.md`](docs/hubspot-scoping-integration.md).
 
 ## How it works
 
@@ -18,7 +28,7 @@ Acumatica: OAuth2 token (ROPC/password grant)
    ▼
 For each new project (filtered to IncludedPractices, minus ExcludedProjectIds):
    • resolve practice → site + library + parent folder
-   • create Document Set (content type "Project") named from first 40 chars of Description
+   • create Document Set (content type "Project") named "{customer} ({project id})"
    • set metadata: Project Id, Customer Name, Project Name, Project Manager (People field)
    • set permissions: break inheritance; Owners = Full Control;
                       Project Manager + Practice Leader = Edit
@@ -27,12 +37,31 @@ For each new project (filtered to IncludedPractices, minus ExcludedProjectIds):
 Advance + persist watermark (newest processed CreatedOn)
 ```
 
+### Reconcile (keep tracked sets in sync)
+Beyond create-on-new, two timers keep **already-tracked** Acumatica doc sets current — signature-gated
+(a SHA-256 of the desired state in a hidden `ProjectSyncSig` column), so unchanged sets cost zero writes:
+- **Incremental** (`%ProjectSyncReconcileSchedule%`) — short-circuits on the team GI's `ModifiedOn`
+  watermark, touching only projects whose team changed.
+- **Full** (`%ProjectSyncFullReconcileSchedule%`, daily) — every tracked set, catching PM/description
+  changes and team removals.
+
+Permissions include the **project team** (from the `EPEmployeeContract` team GI) alongside PM + leader.
+
+### Client uploads (optional)
+When `SharePoint:CreateClientUploadLink = true`, each new workspace gets a `Client Uploads` subfolder and
+an anonymous, upload-only ("Request files") Microsoft **Graph** link (30-day expiry) stamped as a plain
+text value in the `ClientUploadLink` column (copy-and-send to the client). Requires a Graph
+`Sites.Selected` grant on the site and tenant "Anyone" links enabled. No one is notified on upload
+(the built-in notification goes to the app identity, which has no mailbox).
+
 ### Key design points
 - **Moving-forward only.** `State:FirstRunLookbackHours = 0`, so the first run stamps the
   watermark at "now" and only new projects are processed — no historical backfill.
-- **Folder naming.** First 40 chars of the Description (`SharePoint:DocumentSetNameMaxLength`),
-  sanitized. Descriptions aren't unique, so **dedup is keyed on the Project Id column**, and a
-  colliding folder name gets the project id appended. Blank descriptions fall back to the id.
+- **Folder naming.** `{first N chars of Customer Name} ({Project Id})` (`N` =
+  `SharePoint:DocumentSetNameMaxLength`, default 10), sanitized for SharePoint (e.g.
+  `Robert Pal (10-31-21-74663)`). Because the unique Project Id is part of the name, names are
+  effectively unique; **dedup is still keyed on the Project Id column**. Blank customer names fall
+  back to just the id.
 - **People field.** The GI's `ProjectManager` column returns the PM's **email**; the function
   resolves it to a SharePoint user (`EnsureUser`). Emails outside the tenant are left blank (fail-soft).
 - **Fail-safe ordering.** Oldest-first; if a project fails the cycle halts and the watermark holds
@@ -45,12 +74,15 @@ Advance + persist watermark (newest processed CreatedOn)
 
 | Path | Purpose |
 |------|---------|
-| `Functions/ProjectSyncTimerFunction.cs` | Timer trigger (`%ProjectSyncSchedule%`) |
+| `Functions/ProjectSyncTimerFunction.cs` | Acumatica create timer (`%ProjectSyncSchedule%`) |
+| `Functions/ProjectSyncReconcileFunctions.cs` | Reconcile timers (incremental + full) |
+| `Functions/HubSpotScopingFunctions.cs` | HubSpot scoping poll timer (`%HubSpotScopingSchedule%`) |
 | `Functions/ProjectSyncHttpFunction.cs` | Manual **run-now** endpoint (`POST /api/sync/run`) |
-| `ProjectSyncProcessor.cs` | Orchestration: watermark → query → filter → create → advance |
-| `Acumatica/` | OAuth2 (ROPC) token provider + GI OData client |
-| `SharePoint/` | App-only cert auth, Document Set create, metadata, permissions (CSOM/PnP) |
-| `State/` | Blob-backed last-run store |
+| `ProjectSyncProcessor.cs` | Acumatica orchestration: watermark → query → filter → create/reconcile |
+| `Acumatica/` | OAuth2 (ROPC) token provider + GI OData client (projects + team) |
+| `HubSpot/` | OAuth/token provider, CRM v3 deals client, scoping poll processor |
+| `SharePoint/` | Cert auth, Document Set create, metadata, permissions, Graph upload links (CSOM/PnP) |
+| `State/` | Blob-backed last-run + named watermark store |
 | `Options/` | Strongly-typed settings |
 | `tools/` | Standalone diagnostic consoles (see below) |
 
@@ -61,7 +93,13 @@ Each reads config from `local.settings.json` and needs no Functions runtime:
 - **`AcumaticaConnectivityTest`** — verifies Acumatica auth + GI field mapping.
 - **`ProjectSyncDryRun -- <days>`** — previews what would be created (+ PM email-domain breakdown).
 - **`SharePointConnectivityTest`** — verifies SharePoint auth, library, content type, column names (read-only).
-- **`CreateOneDocumentSet -- <ProjectId>`** — creates/updates one set and reads back metadata + permissions.
+- **`SharePointHardening [--lock]`** — reports/enables versioning + recycle bin; locks the `Current` folder to code-only creation.
+- **`CreateOneDocumentSet -- <ProjectId> [--delete]`** — creates/updates one Acumatica set; reads back metadata + permissions.
+- **`ReconcileOnce [full|incremental]`** — runs a single reconcile pass against the real systems.
+- **`HubSpotOAuthSetup`** — one-time: captures an OAuth refresh token via a local redirect.
+- **`HubSpotConnectivityTest`** — verifies the HubSpot token; lists pipelines/stages + candidate properties.
+- **`HubSpotPollOnce -- [lookbackHours]`** — dry-run plan of scoping workspaces that would be created.
+- **`CreateOneScopingWorkspace -- <dealId> [--delete]`** — creates/updates one scoping set from a HubSpot deal.
 
 ## Configuration
 
@@ -97,12 +135,28 @@ SharePoint:PracticeMappings:0:Practice           = Estate & Gift
 SharePoint:PracticeMappings:0:PracticeLeaderEmail = bjohnson@marshall-stevens.com
 SharePoint:PracticeMappings:0:SiteUrl            = https://marshallstevens.sharepoint.com/sites/GiftEstate
 SharePoint:PracticeMappings:0:Library            = Documents
-SharePoint:PracticeMappings:0:ParentFolder       = Projects/Active
+SharePoint:PracticeMappings:0:ParentFolder       = Projects/Current
 ```
 
 To add a practice: add an entry (`:1:…`) with its own site/library, add the practice to
 `Acumatica:IncludedPractices`, grant the app `fullControl` on that site, and provision the library
 (the "Project" content type + the metadata columns). `SharePointConnectivityTest` verifies a site's setup.
+
+### HubSpot scoping (`HubSpot:*`)
+A second source: the **`HubSpotScopingPoll`** timer (`%HubSpotScopingSchedule%`) polls HubSpot deals
+modified since a persisted watermark (`hubspot-deals`) and creates/updates a scoping workspace for each
+in-scope deal, keyed on `HubSpotDealId`, with `Status = Scoping` and access for the deal **owner** +
+practice leader.
+
+- **Auth**: OAuth refresh-token (`ClientId`/`ClientSecret`/`RefreshToken`) preferred, or a static
+  private-app token (`AccessToken`) as a fallback. Token is a Key Vault secret in production.
+- **In scope**: `PracticeProperty = practices` (a multi-select) contains an `IncludedPractices` value
+  (e.g. `Estate & Gift`), **and** the deal stage is not in `TerminalStageIds` (Won/Lost/Closed).
+- **Customer name**: resolved from the deal's **client contact** — the contact's `company` text, then its
+  associated company name, then the deal name (order via `CustomerCompanyTextFirst`).
+- **Watermark + floors**: `FirstRunLookbackHours` (default 0 = moving-forward); `CreatedAfter` — an
+  optional created-date floor so pre-existing open deals aren't backfilled when HubSpot bumps their
+  modified date. Search paging respects HubSpot's 10,000-result window and retries on HTTP 429.
 
 ## Local development
 
@@ -126,11 +180,19 @@ Deployed to **Windows Consumption** (resource group `rg-projectsync`, East US):
 
 - Function App `func-projectsync-2276c5` — **Windows** Consumption, .NET 10 isolated, Functions v4.
 - Storage `stprojsync2276c5`; App Insights; **Key Vault `kv-projsync-2276c5`**.
+- **Functions**: `ProjectSyncTimer`, `ProjectSyncReconcileIncremental`, `ProjectSyncReconcileFull`,
+  `HubSpotScopingPoll`, `ProjectSyncRunNow` (HTTP).
 - Secrets (`acumatica-client-secret`, `acumatica-password`, `sharepoint-cert-base64`,
-  `sharepoint-cert-password`) live in Key Vault; the Function App's **system-assigned managed
-  identity** reads them via `@Microsoft.KeyVault(SecretUri=…)` app-setting references.
+  `sharepoint-cert-password`, `hubspot-access-token`) live in Key Vault; the Function App's
+  **system-assigned managed identity** reads them via `@Microsoft.KeyVault(…)` app-setting references.
 - App settings use **`__`** separators (env-var form). Deploy with `az functionapp deployment
-  source config-zip`.
+  source config-zip` (publish → zip the output → deploy; the `az` `function list` view can lag, so
+  verify with `functionapp function show`).
+- Beyond the base settings: reconcile needs the **team GI** (`Acumatica__TeamGenericInquiryName` + team
+  fields) and `ProjectSyncReconcileSchedule` / `ProjectSyncFullReconcileSchedule`; HubSpot needs
+  `HubSpot__AccessToken` (KV ref), `HubSpotScopingSchedule`, `HubSpot__PracticeProperty`,
+  `HubSpot__IncludedPractices__0`, `HubSpot__TerminalStageIds__*`, and `HubSpot__CreatedAfter`
+  (go-live floor); uploads need `SharePoint__CreateClientUploadLink` / `ClientUploadLinkScope`.
 - **Failure alert**: an App Insights log alert (`ProjectSync-Errors`) emails jparks@marshall-stevens.com
   when the function logs an Error/exception in a 15-minute window.
 

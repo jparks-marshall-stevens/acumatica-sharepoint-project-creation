@@ -30,6 +30,12 @@ public sealed class SharePointContextFactory
         return authManager.GetContextAsync(siteUrl);
     }
 
+    /// <summary>
+    /// The app-only certificate, shared with the Graph upload-link path so it authenticates with the
+    /// same credential (Graph needs its own <c>Sites.Selected</c> grant, but the cert is the same).
+    /// </summary>
+    public X509Certificate2 Certificate => _certificate.Value;
+
     private X509Certificate2 LoadCertificate()
     {
         // Option 1: certificate supplied inline as a base64 PFX.

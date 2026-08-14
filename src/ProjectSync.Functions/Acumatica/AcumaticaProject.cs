@@ -13,4 +13,7 @@ public sealed record AcumaticaProject
 
     public string? Practice { get; init; }
     public DateTimeOffset? CreatedDateTime { get; init; }
+
+    /// <summary>Emails of the project's team/employees (from the team GI). Granted Edit alongside the PM + leader.</summary>
+    public IReadOnlyList<string> TeamEmails { get; init; } = Array.Empty<string>();
 }

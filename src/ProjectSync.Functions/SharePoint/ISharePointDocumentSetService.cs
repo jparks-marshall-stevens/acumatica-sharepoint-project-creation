@@ -15,9 +15,48 @@ public interface ISharePointDocumentSetService
     /// from configuration only — no SharePoint connection. Used by dry-run.
     /// </summary>
     DocumentSetPlan PlanDocumentSet(AcumaticaProject project);
+
+    /// <summary>
+    /// Ensures a scoping-phase Document Set exists for a HubSpot deal (created if absent), keyed on the
+    /// HubSpot deal id, stamped Customer / Project name / HubSpotDealId / Status=Scoping, and granting the
+    /// deal owner + practice leader. Idempotent.
+    /// </summary>
+    Task<DocumentSetResult> EnsureScopingWorkspaceAsync(ScopingWorkspace workspace, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Reconciles metadata + permissions of ALREADY-TRACKED document sets against the desired state.
+    /// Only sets whose signature changed are re-applied (a single bulk read finds them). Projects
+    /// without an existing set are skipped (no backfill). When <paramref name="onlyProjectIds"/> is
+    /// non-null, only those ids are considered (incremental); null reconciles all tracked (daily sweep).
+    /// </summary>
+    Task<ReconcileResult> ReconcileAsync(
+        IReadOnlyList<AcumaticaProject> desiredProjects,
+        IReadOnlySet<string>? onlyProjectIds,
+        CancellationToken cancellationToken);
+}
+
+/// <summary>Outcome of a reconcile pass.</summary>
+public sealed record ReconcileResult
+{
+    public int Considered { get; init; }
+    public int Updated { get; init; }
+    public int Unchanged { get; init; }
+    public int NotTracked { get; init; }
 }
 
 public sealed record DocumentSetResult(bool Created, string ServerRelativeUrl);
+
+/// <summary>A scoping-phase workspace to create/ensure from a HubSpot deal.</summary>
+public sealed record ScopingWorkspace
+{
+    public required string DealId { get; init; }
+    public string? CustomerName { get; init; }
+    public string? ProjectName { get; init; }
+    public string? Practice { get; init; }
+
+    /// <summary>Deal owner email — granted Edit alongside the practice leader.</summary>
+    public string? OwnerEmail { get; init; }
+}
 
 /// <summary>The intended destination for a project's Document Set (config-resolved, not yet created).</summary>
 public sealed record DocumentSetPlan(string SiteUrl, string Library, string? ParentFolder, string SetName);

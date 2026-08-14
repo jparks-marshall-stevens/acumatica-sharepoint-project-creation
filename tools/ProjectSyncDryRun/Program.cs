@@ -44,7 +44,8 @@ using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(acumaticaOption
 var tokenProvider = new AcumaticaTokenProvider(http, acumaticaOptions, loggerFactory.CreateLogger<AcumaticaTokenProvider>());
 var acumatica = new AcumaticaClient(http, tokenProvider, acumaticaOptions, loggerFactory.CreateLogger<AcumaticaClient>());
 var contextFactory = new SharePointContextFactory(sharePointOptions, loggerFactory.CreateLogger<SharePointContextFactory>());
-var sharePoint = new SharePointDocumentSetService(contextFactory, sharePointOptions, loggerFactory.CreateLogger<SharePointDocumentSetService>());
+var uploadLinks = new GraphUploadLinkService(contextFactory, sharePointOptions, loggerFactory.CreateLogger<GraphUploadLinkService>());
+var sharePoint = new SharePointDocumentSetService(contextFactory, uploadLinks, sharePointOptions, loggerFactory.CreateLogger<SharePointDocumentSetService>());
 
 var processor = new ProjectSyncProcessor(
     acumatica, sharePoint, new InMemoryLastRunStore(), stateOptions, acumaticaOptions,
@@ -76,7 +77,7 @@ if (result.Plan is { Count: > 0 })
     // Aligned table of the values that would be written.
     const int wName = 42, wId = 16, wCust = 30, wPm = 20, wDate = 10;
     string H(string s, int w) => (s.Length > w ? s[..(w - 1)] + "…" : s).PadRight(w);
-    Console.WriteLine($"{H("Folder name (= first 40 of Description)", wName)} {H("Project Id", wId)} {H("Customer", wCust)} {H("Project Manager", wPm)} {H("Created", wDate)}");
+    Console.WriteLine($"{H("Folder name = Customer (Id)", wName)} {H("Project Id", wId)} {H("Customer", wCust)} {H("Project Manager", wPm)} {H("Created", wDate)}");
     Console.WriteLine(new string('-', wName + wId + wCust + wPm + wDate + 4));
     foreach (var p in rows)
     {
@@ -155,4 +156,6 @@ file sealed class InMemoryLastRunStore : ILastRunStore
 {
     public Task<DateTimeOffset?> GetLastRunAsync(CancellationToken cancellationToken) => Task.FromResult<DateTimeOffset?>(null);
     public Task SetLastRunAsync(DateTimeOffset value, CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task<DateTimeOffset?> GetWatermarkAsync(string name, CancellationToken cancellationToken) => Task.FromResult<DateTimeOffset?>(null);
+    public Task SetWatermarkAsync(string name, DateTimeOffset value, CancellationToken cancellationToken) => Task.CompletedTask;
 }

@@ -179,14 +179,69 @@ try
     }
 
     Console.WriteLine();
-    Console.WriteLine("✅ Acumatica connectivity OK.");
-    return 0;
 }
 catch (Exception ex)
 {
     Console.Error.WriteLine($"❌ Typed client failed: {ex.Message}");
     return 4;
 }
+
+// --- Step 4: team GI probe (property names + sample rows) -------------------
+if (!string.IsNullOrWhiteSpace(options.TeamGenericInquiryName))
+{
+    try
+    {
+        var baseUrl = options.BaseUrl.TrimEnd('/');
+        var teamUrl = $"{baseUrl}/t/{Uri.EscapeDataString(options.Tenant)}/api/odata/gi/" +
+                      $"{Uri.EscapeDataString(options.TeamGenericInquiryName)}?$top=8";
+        Console.WriteLine($"→ Probing team GI '{options.TeamGenericInquiryName}'…");
+        using var req = new HttpRequestMessage(HttpMethod.Get, teamUrl);
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        using var resp = await http.SendAsync(req, CancellationToken.None);
+        var body = await resp.Content.ReadAsStringAsync();
+        if (!resp.IsSuccessStatusCode)
+        {
+            Console.Error.WriteLine($"❌ Team GI query failed ({(int)resp.StatusCode}): {Truncate(body, 300)}");
+        }
+        else
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("value", out var arr) && arr.GetArrayLength() > 0)
+            {
+                Console.WriteLine("✔ Team GI properties (name → sample value):");
+                foreach (var prop in arr[0].EnumerateObject())
+                {
+                    var val = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : prop.Value.GetRawText();
+                    Console.WriteLine($"    {prop.Name,-28} → {Truncate(val, 50)}");
+                }
+                Console.WriteLine();
+                Console.WriteLine("  Configured team field names:");
+                foreach (var (label, field) in new[]
+                {
+                    ("TeamProjectIdField", options.TeamProjectIdField),
+                    ("TeamEmailField", options.TeamEmailField),
+                    ("TeamModifiedField", options.TeamModifiedField),
+                })
+                {
+                    Console.WriteLine($"    {(arr[0].TryGetProperty(field, out _) ? "✔" : "✖")} {label,-20} = '{field}'");
+                }
+            }
+            else
+            {
+                Console.WriteLine("⚠ Team GI returned no rows.");
+            }
+        }
+        Console.WriteLine();
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"❌ Team GI probe failed: {ex.Message}");
+    }
+}
+
+Console.WriteLine("✅ Acumatica connectivity OK.");
+return 0;
 
 // ---------------------------------------------------------------------------
 static Dictionary<string, string?> LoadFunctionsValues(string path)

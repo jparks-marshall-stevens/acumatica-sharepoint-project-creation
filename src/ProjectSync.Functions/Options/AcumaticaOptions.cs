@@ -61,6 +61,13 @@ public sealed class AcumaticaOptions
 
     public string PracticeField { get; set; } = "Practice";
 
+    // --- Team GI (project employees, for permission sync) ---
+    /// <summary>Name of the OData GI returning one row per (project, employee) with the employee email.</summary>
+    public string TeamGenericInquiryName { get; set; } = string.Empty;
+    public string TeamProjectIdField { get; set; } = "ProjectID";
+    public string TeamEmailField { get; set; } = "EmployeeEmail";
+    public string TeamModifiedField { get; set; } = "LastModifiedDateTime";
+
     /// <summary>Http timeout for Acumatica calls, seconds.</summary>
     public int TimeoutSeconds { get; set; } = 100;
 

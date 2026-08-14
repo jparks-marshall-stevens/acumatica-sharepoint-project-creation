@@ -34,35 +34,34 @@ public class SharePointNamingTests
     }
 
     [Fact]
-    public void BuildDocumentSetName_TruncatesToMaxLength()
+    public void BuildDocumentSetName_FirstNCustomerChars_ParenthesizedProjectId()
     {
-        var description = "Fair market value of a 1.0% ownership interest as of June 30, 2026";
-        var name = SharePointNaming.BuildDocumentSetName(description, "10-31-21-74655", 40);
-        // First 40 chars, with the SharePoint-illegal '%' replaced by '-'.
-        Assert.Equal("Fair market value of a 1.0- ownership in", name);
-        Assert.Equal(40, name.Length);
+        // First 10 chars of customer + " (project id)".
+        var name = SharePointNaming.BuildDocumentSetName("Robert Palumbo", "10-31-21-74663", 10);
+        Assert.Equal("Robert Pal (10-31-21-74663)", name);
     }
 
     [Fact]
-    public void BuildDocumentSetName_SanitizesIllegalCharsInDescription()
+    public void BuildDocumentSetName_ShortCustomer_UsedWhole()
     {
-        var name = SharePointNaming.BuildDocumentSetName("Mom Holdings & Koddi: Valuation/Report", "P1", 40);
-        Assert.Equal("Mom Holdings & Koddi- Valuation-Report", name); // ':' and '/' -> '-', '&' kept
+        var name = SharePointNaming.BuildDocumentSetName("GPM, Inc.", "15-31-26-10451", 10);
+        Assert.Equal("GPM, Inc. (15-31-26-10451)", name);
+    }
+
+    [Fact]
+    public void BuildDocumentSetName_TruncationKeepsAmpersand()
+    {
+        // "Kelleher &" is the first 10 chars; ampersand is legal and kept.
+        var name = SharePointNaming.BuildDocumentSetName("Kelleher & Holland, LLC", "10-31-21-74664", 10);
+        Assert.Equal("Kelleher & (10-31-21-74664)", name);
     }
 
     [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]
-    public void BuildDocumentSetName_BlankDescription_FallsBackToProjectId(string? description)
+    public void BuildDocumentSetName_BlankCustomer_FallsBackToProjectId(string? customer)
     {
-        Assert.Equal("10-31-21-74655", SharePointNaming.BuildDocumentSetName(description, "10-31-21-74655", 40));
-    }
-
-    [Fact]
-    public void BuildDocumentSetName_ShortDescription_KeptAsIs()
-    {
-        Assert.Equal("Odessa Separator Valuation",
-            SharePointNaming.BuildDocumentSetName("Odessa Separator Valuation", "17-34-19-11617", 40));
+        Assert.Equal("10-31-21-74655", SharePointNaming.BuildDocumentSetName(customer, "10-31-21-74655", 10));
     }
 }

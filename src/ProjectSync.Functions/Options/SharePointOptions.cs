@@ -35,10 +35,10 @@ public sealed class SharePointOptions
     public string DocumentSetContentType { get; set; } = "Document Set";
 
     /// <summary>
-    /// Maximum length of the document-set folder name, taken from the start of the project description.
-    /// Colliding names are made unique by appending the project id.
+    /// Number of leading characters of the customer name used in the document-set folder name,
+    /// which is "{customer[..N]} | {project id}".
     /// </summary>
-    public int DocumentSetNameMaxLength { get; set; } = 40;
+    public int DocumentSetNameMaxLength { get; set; } = 10;
 
     /// <summary>When true, set explicit permissions on each document set (project manager + practice leader).</summary>
     public bool SetProjectPermissions { get; set; } = true;
@@ -61,6 +61,13 @@ public sealed class SharePointOptions
     public string ProjectManagerColumn { get; set; } = "ProjectManager";
 
     /// <summary>
+    /// Internal name of a text column the reconcile uses to stash a hash of the last-applied state
+    /// (metadata + grantee emails). The reconcile bulk-reads this column and only re-applies a set when
+    /// its desired hash differs — so unchanged projects cost zero writes. Auto-created if missing.
+    /// </summary>
+    public string SignatureColumn { get; set; } = "ProjectSyncSig";
+
+    /// <summary>
     /// True when <see cref="ProjectManagerColumn"/> is a Person/Group (People) field rather than text.
     /// When true, the value is resolved to a site user via EnsureUser (preferring the GI's PM email —
     /// see Acumatica:ProjectManagerEmailField) and set as a FieldUserValue. If the user can't be
@@ -69,6 +76,51 @@ public sealed class SharePointOptions
     public bool ProjectManagerIsPersonColumn { get; set; }
 
     public string PracticeColumn { get; set; } = "Practice";
+
+    // --- Scoping (HubSpot-sourced) workspace columns ---
+
+    /// <summary>Internal name of the column holding the HubSpot deal id (scoping idempotency key). Auto-created.</summary>
+    public string HubSpotDealIdColumn { get; set; } = "HubSpotDealId";
+
+    /// <summary>Internal name of the column holding the workspace lifecycle status (Scoping/Active). Auto-created.</summary>
+    public string StatusColumn { get; set; } = "Status";
+
+    /// <summary>Status value stamped on a scoping-phase (HubSpot) workspace.</summary>
+    public string ScopingStatusValue { get; set; } = "Scoping";
+
+    /// <summary>Status value stamped on an Acumatica project workspace (the post-scoping / ERP phase).</summary>
+    public string ProjectStatusValue { get; set; } = "Execution";
+
+    // --- Client Uploads folder + external "Request files" (upload-only) sharing link ---
+
+    /// <summary>
+    /// When true, each newly-created document set gets a <see cref="ClientUploadsFolderName"/> subfolder
+    /// and an anonymous upload-only ("Request files") sharing link is generated for it, stored in
+    /// <see cref="ClientUploadLinkColumn"/>. Off by default: the Graph call requires the app to have a
+    /// Microsoft Graph <c>Sites.Selected</c> grant on the site (separate from the SharePoint/CSOM grant),
+    /// and the tenant must allow "Anyone" links for the anonymous scope. Fail-soft — if link creation
+    /// fails, the document set is still created and the run succeeds. Lifecycle is create-once: the link
+    /// is minted only when the set is first created, never refreshed by reconcile.
+    /// </summary>
+    public bool CreateClientUploadLink { get; set; }
+
+    /// <summary>Name of the upload subfolder created inside each document set.</summary>
+    public string ClientUploadsFolderName { get; set; } = "Client Uploads";
+
+    /// <summary>
+    /// Internal name of a text/URL column on the document set that receives the generated upload link.
+    /// If the column is absent the link is still created (and logged) but not stamped.
+    /// </summary>
+    public string ClientUploadLinkColumn { get; set; } = "ClientUploadLink";
+
+    /// <summary>Days until the upload link expires (Graph <c>expirationDateTime</c>). Default 30.</summary>
+    public int ClientUploadLinkExpirationDays { get; set; } = 30;
+
+    /// <summary>
+    /// Sharing scope for the upload link: "anonymous" (Anyone with the link — required for external
+    /// clients who have no Marshall &amp; Stevens login) or "organization" (only signed-in M&amp;S users).
+    /// </summary>
+    public string ClientUploadLinkScope { get; set; } = "anonymous";
 
     /// <summary>
     /// Maps Acumatica practice values to SharePoint destinations. An indexed list (rather than a

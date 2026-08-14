@@ -36,13 +36,17 @@ var configuration = new ConfigurationBuilder()
 var acumaticaOptions = Bind<AcumaticaOptions>(configuration, AcumaticaOptions.SectionName);
 var sharePointOptions = Bind<SharePointOptions>(configuration, SharePointOptions.SectionName);
 
-using var loggerFactory = LoggerFactory.Create(b => b.SetMinimumLevel(LogLevel.Warning).AddSimpleConsole(o => o.SingleLine = true));
+using var loggerFactory = LoggerFactory.Create(b => b
+    .SetMinimumLevel(LogLevel.Warning)
+    .AddFilter("ProjectSync", LogLevel.Information) // surface our own info logs (e.g. upload-link creation)
+    .AddSimpleConsole(o => o.SingleLine = true));
 using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(acumaticaOptions.Value.TimeoutSeconds) };
 
 var tokenProvider = new AcumaticaTokenProvider(http, acumaticaOptions, loggerFactory.CreateLogger<AcumaticaTokenProvider>());
 var acumatica = new AcumaticaClient(http, tokenProvider, acumaticaOptions, loggerFactory.CreateLogger<AcumaticaClient>());
 var contextFactory = new SharePointContextFactory(sharePointOptions, loggerFactory.CreateLogger<SharePointContextFactory>());
-var sharePoint = new SharePointDocumentSetService(contextFactory, sharePointOptions, loggerFactory.CreateLogger<SharePointDocumentSetService>());
+var uploadLinks = new GraphUploadLinkService(contextFactory, sharePointOptions, loggerFactory.CreateLogger<GraphUploadLinkService>());
+var sharePoint = new SharePointDocumentSetService(contextFactory, uploadLinks, sharePointOptions, loggerFactory.CreateLogger<SharePointDocumentSetService>());
 
 Console.WriteLine($"=== Create ONE document set: project {projectId} ===");
 Console.WriteLine();
@@ -56,8 +60,13 @@ if (project is null)
     return 2;
 }
 
+// Enrich with the project team (emails granted alongside PM + leader).
+var teamEmails = await acumatica.GetTeamEmailsAsync(project.ProjectId, CancellationToken.None);
+project = project with { TeamEmails = teamEmails };
+
 var plan = sharePoint.PlanDocumentSet(project);
 Console.WriteLine("Project:");
+Console.WriteLine($"    Team ({teamEmails.Count})   : {string.Join(", ", teamEmails)}");
 Console.WriteLine($"    Project Id      : {project.ProjectId}");
 Console.WriteLine($"    Project Name    : {project.ProjectName}");
 Console.WriteLine($"    Customer Name   : {project.CustomerName}");
@@ -65,6 +74,37 @@ Console.WriteLine($"    Project Manager : {project.ProjectManager}  (email: {pro
 Console.WriteLine($"    Practice        : {project.Practice}");
 Console.WriteLine($"    → Would create  : \"{plan.SetName}\" in {plan.Library} @ {plan.SiteUrl}");
 Console.WriteLine();
+
+// Optional: recycle the existing document set for this project (soft delete → site Recycle Bin).
+if (args.Contains("--delete"))
+{
+    using var delCtx = await contextFactory.CreateContextAsync(plan.SiteUrl);
+    var delList = delCtx.Web.Lists.GetByTitle(plan.Library);
+    var pidCol = sharePointOptions.Value.ProjectIdColumn;
+    var query = new CamlQuery
+    {
+        ViewXml = "<View Scope='RecursiveAll'><Query><Where><And>" +
+                  $"<Eq><FieldRef Name='{pidCol}'/><Value Type='Text'>{project.ProjectId}</Value></Eq>" +
+                  "<Eq><FieldRef Name='FSObjType'/><Value Type='Integer'>1</Value></Eq>" +
+                  "</And></Where></Query><RowLimit>5</RowLimit></View>",
+    };
+    var items = delList.GetItems(query);
+    delCtx.Load(items, i => i.Include(x => x["FileRef"]));
+    await delCtx.ExecuteQueryRetryAsync();
+    if (items.Count == 0)
+    {
+        Console.WriteLine("No existing document set found for this project id; nothing to delete.");
+    }
+    foreach (var it in items)
+    {
+        var url = it["FileRef"]?.ToString();
+        Console.WriteLine($"Recycling: {url}");
+        delCtx.Web.GetFolderByServerRelativeUrl(url).Recycle();
+    }
+    await delCtx.ExecuteQueryRetryAsync();
+    Console.WriteLine("✔ Recycled to the site Recycle Bin (recoverable).");
+    return 0;
+}
 
 // 2. Create (or update if it already exists).
 Console.WriteLine("Creating document set…");
@@ -94,6 +134,7 @@ Console.WriteLine($"    {sharePointOptions.Value.ProjectIdColumn,-24} = {Show(sh
 Console.WriteLine($"    {sharePointOptions.Value.CustomerNameColumn,-24} = {Show(sharePointOptions.Value.CustomerNameColumn)}");
 Console.WriteLine($"    {sharePointOptions.Value.ProjectNameColumn,-24} = {Show(sharePointOptions.Value.ProjectNameColumn)}");
 Console.WriteLine($"    {sharePointOptions.Value.ProjectManagerColumn,-24} = {Show(sharePointOptions.Value.ProjectManagerColumn)}");
+Console.WriteLine($"    {sharePointOptions.Value.StatusColumn,-24} = {Show(sharePointOptions.Value.StatusColumn)}");
 
 var pmResolved = item.FieldValues.TryGetValue(sharePointOptions.Value.ProjectManagerColumn, out var pmVal) && pmVal is FieldUserValue;
 Console.WriteLine();
@@ -123,6 +164,31 @@ catch (Exception ex)
 {
     Console.WriteLine($"    ⚠ Could not read/set permissions: {ex.Message}");
     Console.WriteLine("    (The app likely lacks Full Control on the site — upgrade the Sites.Selected grant to fullControl.)");
+}
+
+// Verify the Client Uploads folder + upload link when the feature is enabled.
+if (sharePointOptions.Value.CreateClientUploadLink)
+{
+    Console.WriteLine();
+    Console.WriteLine("Verifying Client Uploads folder + upload link…");
+    var uploadsName = sharePointOptions.Value.ClientUploadsFolderName;
+    ctx.Load(folder.Folders, fs => fs.Include(f => f.Name, f => f.ServerRelativeUrl));
+    await ctx.ExecuteQueryRetryAsync();
+    var uploads = folder.Folders.FirstOrDefault(f => string.Equals(f.Name, uploadsName, StringComparison.OrdinalIgnoreCase));
+    Console.WriteLine(uploads is not null
+        ? $"    ✔ Subfolder present : {uploads.ServerRelativeUrl}"
+        : $"    ⚠ Subfolder '{uploadsName}' not found.");
+
+    var linkCol = sharePointOptions.Value.ClientUploadLinkColumn;
+    if (item.FieldValues.TryGetValue(linkCol, out var linkVal) && linkVal is not null)
+    {
+        var url = linkVal is FieldUrlValue fu ? fu.Url : linkVal.ToString();
+        Console.WriteLine($"    ✔ Link column '{linkCol}' = {url}");
+    }
+    else
+    {
+        Console.WriteLine($"    ⚠ Link column '{linkCol}' is blank or absent (link may have been created but not stamped — add the column to see it).");
+    }
 }
 
 Console.WriteLine();
