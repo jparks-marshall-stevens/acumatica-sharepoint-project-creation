@@ -1,6 +1,6 @@
 # HubSpot Scoping → SharePoint Workspace Integration (Design)
 
-**Status:** Draft for discussion · **Date:** 2026-08-14
+**Status:** Phase 1 + Phase 2 (promotion) implemented · **Date:** 2026-08-18
 
 ## Purpose
 
@@ -21,35 +21,64 @@ Guiding principle: **one workspace per engagement for its entire life.** It is b
 | Trigger | **Poll** HubSpot (not webhook) — consistent with Acumatica, resilient, no public endpoint |
 | Workspace location across phases | **In place**, one folder; a **`Status`** column flips `Scoping → Active`. No folder moves. |
 | HubSpot → Acumatica conversion | **Manual** (a person creates the Acumatica project) |
+| Correlation key | The **HubSpot opportunity number** (`quote_number`, e.g. `PQ005871`) recorded in the Acumatica GI's **`PQCode`** column |
+| Permissions at promotion | **Clean reset** — the delivery team replaces the deal owner. Deal team and delivery team are deliberately separate. |
+| Folder name at promotion | **Renamed** in place to the project-id form, so the library reads consistently |
 
 ## Target lifecycle
 
 ```mermaid
 flowchart TD
-    A[HubSpot deal created<br/>in qualifying pipeline/stage] -->|poll every 15 min| B[Create doc set<br/>key = HubSpotDealId<br/>Status = Scoping<br/>scoping permission groups]
+    A[HubSpot deal created<br/>in scope, non-terminal stage] -->|poll every 15 min| B[Create doc set<br/>key = HubSpotDealId<br/>+ OpportunityId = quote_number<br/>Status = Scoping<br/>access: deal owner + leader]
     B --> C[Scoping work + client uploads]
-    C --> D[Person manually creates<br/>Acumatica project<br/>+ enters HubSpot deal id]
-    D -->|Acumatica poll| E{Existing doc set?<br/>match ProjectId OR HubSpotDealId}
-    E -->|matched on deal id| F[PROMOTE in place:<br/>stamp ProjectId,<br/>Status = Active,<br/>project team + PM + leader]
+    C --> D[Person manually creates<br/>Acumatica project<br/>+ enters PQCode]
+    D -->|Acumatica poll| E{Existing doc set?}
+    E -->|Project Id matches| H[Refresh metadata<br/>+ permissions]
+    E -->|PQCode matches<br/>OpportunityId, then DealId| F[PROMOTE in place:<br/>rename to project-id form,<br/>stamp ProjectId, Status = Execution,<br/>access: team + PM + leader]
     E -->|no match| G[Create fresh doc set<br/>project that skipped scoping]
 ```
 
 ## The linchpin: the correlation key
 
-A single engagement has **two different identifiers** over its life — a HubSpot **deal id** and an Acumatica **project id (ContractCD)**. To promote (rather than duplicate) the workspace, the Acumatica sync must recognize "this project already has a scoping folder."
+A single engagement carries **two identifiers** over its life — a HubSpot deal and an Acumatica **project id
+(ContractCD)**. To promote rather than duplicate, the Acumatica sync must recognize "this project already has
+a scoping folder."
 
-**Mechanism:** at manual conversion, the person enters the **HubSpot deal id into a custom field on the Acumatica project.** The Acumatica sync then does its idempotency lookup by **`ProjectId` OR `HubSpotDealId`**; a deal-id match = a promotion.
+**Mechanism (as built):** the Acumatica GI exposes a **`PQCode`** column (`Acumatica:HubSpotLinkField`),
+populated at conversion with the HubSpot **opportunity number** — the `quote_number` deal property, labelled
+*Opportunity #* in HubSpot, with values like `PQ005871`. On each poll the sync looks for an existing set by:
 
-**Why this is the critical item:** since conversion is manual, this field is the *only* thread linking the two systems. It is one extra field on an already-manual step (low friction), but:
+1. the **Project Id** column — already-tracked project, just refresh it;
+2. failing that, and only when `PQCode` is non-blank, the **`OpportunityId`** column, then the
+   **`HubSpotDealId`** column — a hit on either is a **promotion**.
 
-- **If left blank**, that engagement gets a **second folder** when it hits the ERP. Recoverable, but a manual merge.
-- **Mitigations:** validate the deal-id format on entry; log every promotion that *didn't* find a scoping folder (so mismatches surface); provide an admin "link these two" action as a safety valve.
+The two-column fallback means it links whichever identifier a person actually recorded: the human-facing
+opportunity number, or the raw HubSpot record id pasted from the deal URL.
+
+**Why two columns, not one.** The scoping workspace keys idempotency on the **deal id**, which is immutable.
+The opportunity number is *not* — it can be assigned after the deal is created, or corrected later. Keying
+the workspace on a mutable value would make a late-arriving opportunity number look like a brand-new
+engagement and produce exactly the duplicate this design exists to prevent. So: deal id is identity,
+opportunity number is the correlation key, and both live on the set.
+
+**This is still the single point of failure**, because conversion is manual:
+
+- **`PQCode` left blank** → the engagement gets a **second folder** when it reaches the ERP. Recoverable, but
+  by hand. Every occurrence is logged as a warning (`carries HubSpot link … but no scoping workspace
+  matched`), and `ProjectSyncDryRun` reports how many projects in the window carry a link at all.
+- **Two projects with the same `PQCode`** → the second one does *not* hijack the first one's workspace; it is
+  logged and gets its own folder.
+
+> **Not yet true in production (2026-08-18):** `PQCode` is present on the GI but **null on all 8,929 rows**,
+> including projects created the same day. Until something populates it at conversion, every project takes
+> the "no match" branch and promotion never fires. Verify with one real conversion before trusting it.
 
 ## Data model (document-set columns)
 
 | Column | Scoping | Active | Notes |
 |---|---|---|---|
-| `HubSpotDealId` | set | set | idempotency key at scoping; retained after promotion |
+| `HubSpotDealId` | set | set | immutable identity; idempotency key at scoping, retained after promotion |
+| `OpportunityId` | set | set | `quote_number` / *Opportunity #*; the value `PQCode` is matched against |
 | `ProjectId` (Acumatica) | blank | set | stamped at promotion; idempotency key thereafter |
 | `Status` | `Scoping` | `Active` | drives filtered views/reporting |
 | `Customer`, `Project` | set | set (refreshed from Acumatica) | source of truth shifts to Acumatica after promotion |
@@ -63,6 +92,18 @@ The authoritative-permissions model already recomputes the full grantee set on e
 - **Active:** project team (EPEmployeeContract) + PM + practice leader — the current behavior.
 
 Promotion simply re-applies permissions for the new phase; manual grants are wiped as they are today.
+
+**Decided 2026-08-18 — clean reset.** The deal owner is *not* carried forward. Promotion replaces the scoping
+grantees with the delivery team, and the deal team is treated as a separate population from the delivery team.
+Consequence to be aware of: whoever scoped the engagement loses the folder at promotion unless they are the PM
+or on the Acumatica project team. Re-adding them by hand holds only until the next signature change, then the
+authoritative reset silently removes them again.
+
+**Demotion guard.** A promoted workspace keeps its `HubSpotDealId`, so the HubSpot poll still matches it. Left
+unguarded, any later edit to that deal would re-apply the *scoping* state — flipping `Status` back to
+`Scoping` and resetting access to the deal owner, wiping the delivery team. The scoping path therefore skips
+any workspace whose `Project Id` is already populated. (`HubSpot:TerminalStageIds` only covers this when the
+deal is closed *before* the project is created, which is not guaranteed.)
 
 ## Code shape
 
@@ -87,13 +128,17 @@ The SharePoint document-set service, reconcile engine, signature gating, and upl
 
 1. **Which HubSpot pipeline/stage(s)** should trigger a scoping workspace?
 2. **Scoping permission groups** — who are they (BD, scoping team, practice leader)?
-3. **Acumatica custom field** for the deal id — field name, and who owns adding it to the conversion process/form?
+3. ~~**Acumatica custom field** for the deal id — field name?~~ **Answered:** the GI's `PQCode` column, carrying
+   HubSpot's `quote_number`. Still open: **who owns populating it** at conversion, and validating its format —
+   it is null on every row today.
 4. **Practice at scoping time** — is the practice known from the deal (drives the SharePoint destination), or only once in Acumatica?
 5. **Dead deals** — deals that die in scoping: leave as `Scoping`, archive, or clean up on a cadence?
 6. **Client-upload links during scoping** — enable at scoping (likely yes), or only once active?
 
 ## Suggested phasing
 
-- **Phase 1** — HubSpot poll + create scoping doc set with `Status = Scoping` and scoping permissions. Standalone value even before promotion is wired.
-- **Phase 2** — promotion: Acumatica idempotency lookup gains the `HubSpotDealId` path; flips status and permissions in place.
-- Reconcile, permissions, and upload links come along for free.
+- **Phase 1** *(done)* — HubSpot poll + create scoping doc set with `Status = Scoping` and scoping permissions.
+- **Phase 2** *(done)* — promotion: the Acumatica lookup gained the `OpportunityId` / `HubSpotDealId` path, and
+  flips name, status, and permissions in place.
+- **Phase 3** *(remaining, process not code)* — get `PQCode` populated at conversion, then validate end-to-end
+  with one real deal → project.

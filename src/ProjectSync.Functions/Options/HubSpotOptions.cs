@@ -89,6 +89,14 @@ public sealed class HubSpotOptions
     /// </summary>
     public string ClientContactIdProperty { get; set; } = "client_contact_id";
 
+    /// <summary>
+    /// Optional deal property holding the human-facing opportunity number — the value that gets typed into
+    /// the Acumatica PQCode field at conversion. Stamped onto the scoping workspace so the Acumatica sync
+    /// can find it and promote in place. Leave blank if PQCode carries the raw HubSpot deal id instead;
+    /// the promotion lookup falls back to the deal-id column either way.
+    /// </summary>
+    public string OpportunityIdProperty { get; set; } = string.Empty;
+
     /// <summary>Deal→contact association label identifying the client contact. Default "Client Contact".</summary>
     public string ClientContactLabel { get; set; } = "Client Contact";
 

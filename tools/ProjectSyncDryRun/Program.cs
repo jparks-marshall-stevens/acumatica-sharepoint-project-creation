@@ -71,6 +71,13 @@ if (result.Plan is { Count: > 0 })
 {
     var rows = result.Plan.OrderByDescending(x => x.CreatedDateTime).ToList();
 
+    // Promotion depends entirely on the HubSpot link (the GI's PQCode). A blank one means this project
+    // gets a brand-new folder even if the engagement already has a scoping workspace.
+    var linked = rows.Count(r => !string.IsNullOrWhiteSpace(r.HubSpotLink));
+    Console.WriteLine($"HubSpot link (PQCode) present on {linked} of {rows.Count} project(s)" +
+                      $"{(linked == 0 ? " — nothing can be promoted; every one creates a new document set." : ".")}");
+    Console.WriteLine();
+
     Console.WriteLine($"All sets land in: {rows[0].TargetLibrary}/{rows[0].TargetFolder}  @ {rows[0].TargetSiteUrl}");
     Console.WriteLine();
 

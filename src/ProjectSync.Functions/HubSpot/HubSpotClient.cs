@@ -241,6 +241,63 @@ public sealed class HubSpotClient : IHubSpotClient
         return null;
     }
 
+    public async Task<IReadOnlyList<HubSpotDeal>> GetDealsByIdAsync(
+        IReadOnlyList<string> dealIds, CancellationToken cancellationToken)
+    {
+        const int batchSize = 100; // HubSpot's batch-read limit.
+        var wanted = dealIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (wanted.Count == 0)
+        {
+            return Array.Empty<HubSpotDeal>();
+        }
+
+        var token = await _tokenProvider.GetAccessTokenAsync(cancellationToken);
+        var properties = BuildRequestedProperties();
+        var results = new List<HubSpotDeal>(wanted.Count);
+
+        for (var offset = 0; offset < wanted.Count; offset += batchSize)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var chunk = wanted.Skip(offset).Take(batchSize).ToList();
+            var payload = new Dictionary<string, object?>
+            {
+                ["properties"] = properties,
+                ["inputs"] = chunk.Select(id => new Dictionary<string, string> { ["id"] = id }).ToList(),
+            };
+
+            // Reuses the search POST helper for its 429 handling; the batch endpoint is rate-limited too.
+            var json = await PostSearchAsync(
+                $"{Base()}/crm/v3/objects/deals/batch/read",
+                JsonSerializer.Serialize(payload),
+                token,
+                cancellationToken);
+
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("results", out var arr) || arr.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var result in arr.EnumerateArray())
+            {
+                results.Add(MapDeal(result));
+            }
+        }
+
+        var missing = wanted.Count - results.Count;
+        if (missing > 0)
+        {
+            _logger.LogWarning("HubSpot batch read: {Missing} of {Requested} deal id(s) returned nothing.",
+                missing, wanted.Count);
+        }
+
+        return results;
+    }
+
     private string Base() => _options.BaseUrl.TrimEnd('/');
 
     private async Task<JsonDocument?> GetJsonAsync(string url, string token, CancellationToken cancellationToken)
@@ -274,6 +331,7 @@ public sealed class HubSpotClient : IHubSpotClient
         if (!string.IsNullOrWhiteSpace(_options.CustomerProperty)) props.Add(_options.CustomerProperty);
         if (!string.IsNullOrWhiteSpace(_options.PracticeProperty)) props.Add(_options.PracticeProperty);
         if (!string.IsNullOrWhiteSpace(_options.ClientContactIdProperty)) props.Add(_options.ClientContactIdProperty);
+        if (!string.IsNullOrWhiteSpace(_options.OpportunityIdProperty)) props.Add(_options.OpportunityIdProperty);
         props.AddRange(_options.ExtraProperties);
 
         return props
@@ -340,6 +398,7 @@ public sealed class HubSpotClient : IHubSpotClient
             PipelineId = Get("pipeline"),
             OwnerId = Get(_options.OwnerIdProperty),
             ClientContactId = Get(_options.ClientContactIdProperty),
+            OpportunityId = Get(_options.OpportunityIdProperty)?.Trim(),
             CreatedAt = ParseTop(result, "createdAt"),
             ModifiedAt = ParseTop(result, "updatedAt"),
             Properties = props,

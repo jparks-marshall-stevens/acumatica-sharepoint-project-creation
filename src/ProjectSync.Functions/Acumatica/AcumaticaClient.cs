@@ -92,6 +92,9 @@ public sealed class AcumaticaClient : IAcumaticaClient
                     ? null
                     : GetString(row, _options.ProjectManagerEmailField),
                 Practice = GetString(row, _options.PracticeField),
+                HubSpotLink = string.IsNullOrEmpty(_options.HubSpotLinkField)
+                    ? null
+                    : GetString(row, _options.HubSpotLinkField)?.Trim(),
                 CreatedDateTime = GetDateTime(row, _options.CreatedDateTimeField),
             });
         }

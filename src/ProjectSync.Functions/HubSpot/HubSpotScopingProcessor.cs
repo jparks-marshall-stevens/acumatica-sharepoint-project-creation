@@ -101,6 +101,7 @@ public sealed class HubSpotScopingProcessor
                         ProjectName = deal.DealName,
                         Practice = deal.Practice,
                         OwnerEmail = ownerEmail,
+                        OpportunityId = deal.OpportunityId,
                     }, cancellationToken);
 
                     if (result.Created) created++; else updated++;

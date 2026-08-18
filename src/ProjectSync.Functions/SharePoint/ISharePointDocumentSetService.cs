@@ -7,6 +7,10 @@ public interface ISharePointDocumentSetService
     /// <summary>
     /// Ensures a Document Set exists for the given project (creating it if absent) and stamps
     /// the Project Id / Customer Name / Project Name / Project Manager metadata. Idempotent.
+    ///
+    /// Lookup order: the Project Id column, then — when the project carries a HubSpot deal id — the
+    /// deal-id column, so an engagement that started as a scoping workspace is PROMOTED in place instead
+    /// of getting a second folder.
     /// </summary>
     Task<DocumentSetResult> EnsureProjectDocumentSetAsync(AcumaticaProject project, CancellationToken cancellationToken);
 
@@ -44,7 +48,12 @@ public sealed record ReconcileResult
     public int NotTracked { get; init; }
 }
 
-public sealed record DocumentSetResult(bool Created, string ServerRelativeUrl);
+/// <summary>
+/// Outcome of ensuring one document set. <paramref name="Promoted"/> marks the special case where an
+/// existing SCOPING workspace was converted in place into the project workspace (no new folder, no move)
+/// — reported separately because it is the one path that rewrites another phase’s metadata and access.
+/// </summary>
+public sealed record DocumentSetResult(bool Created, string ServerRelativeUrl, bool Promoted = false);
 
 /// <summary>A scoping-phase workspace to create/ensure from a HubSpot deal.</summary>
 public sealed record ScopingWorkspace
@@ -56,6 +65,12 @@ public sealed record ScopingWorkspace
 
     /// <summary>Deal owner email — granted Edit alongside the practice leader.</summary>
     public string? OwnerEmail { get; init; }
+
+    /// <summary>
+    /// Human-facing opportunity number, refreshed on every poll. Not the idempotency key (the deal id is) —
+    /// it is the value an Acumatica project's PQCode is matched against at promotion.
+    /// </summary>
+    public string? OpportunityId { get; init; }
 }
 
 /// <summary>The intended destination for a project's Document Set (config-resolved, not yet created).</summary>

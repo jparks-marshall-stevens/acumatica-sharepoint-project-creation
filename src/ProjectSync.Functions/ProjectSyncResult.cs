@@ -15,6 +15,13 @@ public sealed record ProjectSyncResult
     /// <summary>Existing document sets whose metadata was refreshed (0 in a dry run).</summary>
     public int Updated { get; init; }
 
+    /// <summary>
+    /// Scoping workspaces promoted in place to project workspaces this cycle — an engagement that started
+    /// from a HubSpot deal reaching the ERP. Counted separately from Created (no new folder) and from
+    /// Updated (the phase, name, and grantees all changed).
+    /// </summary>
+    public int Promoted { get; init; }
+
     /// <summary>In a dry run, the number of document sets that would be created/updated.</summary>
     public int Planned { get; init; }
 
@@ -40,6 +47,10 @@ public sealed record PlannedDocumentSet
     public string? ProjectManager { get; init; }
     public string? ProjectManagerEmail { get; init; }
     public string? Practice { get; init; }
+
+    /// <summary>The project's HubSpot link value (PQCode), when set — blank means it cannot be promoted.</summary>
+    public string? HubSpotLink { get; init; }
+
     public DateTimeOffset? CreatedDateTime { get; init; }
     public string? TargetSiteUrl { get; init; }
     public string? TargetLibrary { get; init; }

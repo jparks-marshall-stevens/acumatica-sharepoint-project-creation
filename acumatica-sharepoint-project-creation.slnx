@@ -7,6 +7,7 @@
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/AcumaticaConnectivityTest/AcumaticaConnectivityTest.csproj" />
+    <Project Path="tools/BackfillOpportunityIds/BackfillOpportunityIds.csproj" />
     <Project Path="tools/CreateOneDocumentSet/CreateOneDocumentSet.csproj" />
     <Project Path="tools/CreateOneScopingWorkspace/CreateOneScopingWorkspace.csproj" />
     <Project Path="tools/HubSpotConnectivityTest/HubSpotConnectivityTest.csproj" />
