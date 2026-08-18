@@ -61,6 +61,16 @@ public sealed class AcumaticaOptions
 
     public string PracticeField { get; set; } = "Practice";
 
+    /// <summary>
+    /// Optional GI column holding the HubSpot identifier this project was converted from — the instance
+    /// uses "PQCode", which carries the HubSpot opportunity number. Conversion is manual, so this value is
+    /// the only thread linking the two systems; it lets the sync PROMOTE an existing scoping workspace in
+    /// place instead of creating a second one. The value is matched against the opportunity-number column
+    /// first and the HubSpot deal-id column second, so either identifier links. Leave blank to disable the
+    /// promotion path; a blank value on an individual row just means "no scoping folder".
+    /// </summary>
+    public string HubSpotLinkField { get; set; } = string.Empty;
+
     // --- Team GI (project employees, for permission sync) ---
     /// <summary>Name of the OData GI returning one row per (project, employee) with the employee email.</summary>
     public string TeamGenericInquiryName { get; set; } = string.Empty;

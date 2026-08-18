@@ -112,6 +112,7 @@ var result = await sharePoint.EnsureScopingWorkspaceAsync(new ScopingWorkspace
     ProjectName = deal.DealName,
     Practice = deal.Practice,
     OwnerEmail = ownerEmail,
+    OpportunityId = deal.OpportunityId,
 }, CancellationToken.None);
 
 Console.WriteLine($"✔ {(result.Created ? "CREATED" : "already existed — updated")}: {result.ServerRelativeUrl}");

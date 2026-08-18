@@ -40,6 +40,8 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         await ctx.ExecuteQueryRetryAsync();
 
         await EnsureTextColumnAsync(ctx, list, _options.StatusColumn);
+        await EnsureTextColumnAsync(ctx, list, _options.HubSpotDealIdColumn);
+        await EnsureTextColumnAsync(ctx, list, _options.OpportunityIdColumn);
 
         // Idempotency is keyed on the Project Id metadata column (unique), NOT the folder name —
         // folder names come from the description and are not guaranteed unique.
@@ -52,6 +54,39 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
             await ApplyMetadataAsync(ctx, existing, project, sig, cancellationToken);
             await ApplyPermissionsAsync(ctx, existing, project, destination, cancellationToken);
             return new DocumentSetResult(Created: false, existing);
+        }
+
+        // Nothing carries this project id yet. If the conversion recorded a HubSpot identifier (the GI's
+        // PQCode), the engagement probably already has a scoping workspace — created from the deal, before
+        // the ERP knew about it — so PROMOTE that one in place rather than opening a second folder for the
+        // same work. The value is matched against the opportunity number first, then the raw deal id, so it
+        // links whichever of the two a person actually recorded.
+        if (!string.IsNullOrWhiteSpace(project.HubSpotLink))
+        {
+            var scoping =
+                await FindByColumnAsync(ctx, list, _options.OpportunityIdColumn, project.HubSpotLink!, cancellationToken)
+                ?? await FindByColumnAsync(ctx, list, _options.HubSpotDealIdColumn, project.HubSpotLink!, cancellationToken);
+
+            if (scoping is not null && !string.IsNullOrWhiteSpace(scoping.ProjectId))
+            {
+                // Two projects claiming one HubSpot identifier (almost certainly a typo). Don't hijack the
+                // workspace that already belongs to the other project; fall through and create a fresh one.
+                _logger.LogWarning(
+                    "HubSpot link {Link} on project {ProjectId} points at a workspace already promoted to project {OwnerProjectId}; creating a separate document set.",
+                    project.HubSpotLink, project.ProjectId, scoping.ProjectId);
+            }
+            else if (scoping is not null)
+            {
+                return await PromoteScopingWorkspaceAsync(ctx, scoping.Url, project, destination, cancellationToken);
+            }
+            else
+            {
+                // Surfaces a mistyped or stale value: this engagement gets a new folder below, and any
+                // scoping folder it should have inherited stays orphaned for a human to merge.
+                _logger.LogWarning(
+                    "Project {ProjectId} carries HubSpot link {Link} but no scoping workspace matched it; creating a new document set.",
+                    project.ProjectId, project.HubSpotLink);
+            }
         }
 
         var parentFolder = list.RootFolder;
@@ -103,16 +138,37 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         await ctx.ExecuteQueryRetryAsync();
 
         await EnsureTextColumnAsync(ctx, list, _options.HubSpotDealIdColumn);
+        await EnsureTextColumnAsync(ctx, list, _options.OpportunityIdColumn);
         await EnsureTextColumnAsync(ctx, list, _options.StatusColumn);
 
-        // Idempotency keyed on the HubSpot deal id (not the folder name).
-        var existing = await FindExistingByColumnAsync(ctx, list, _options.HubSpotDealIdColumn, workspace.DealId, cancellationToken);
+        // Idempotency keyed on the HubSpot deal id — immutable, unlike the opportunity number, which can
+        // be assigned or corrected later. Keying on the id is what stops a late-arriving opportunity number
+        // from looking like a new engagement and producing a duplicate workspace.
+        var existing = await FindByColumnAsync(ctx, list, _options.HubSpotDealIdColumn, workspace.DealId, cancellationToken);
+        if (existing is not null && !string.IsNullOrWhiteSpace(existing.ProjectId))
+        {
+            // The workspace has been promoted: it is an Acumatica project now, and Acumatica owns its
+            // metadata and permissions. Re-applying the scoping state here would flip Status back to
+            // Scoping and reset access to the deal owner, wiping the delivery team — so leave it alone.
+            _logger.LogInformation(
+                "Deal {DealId} was promoted to project {ProjectId}; leaving the workspace to the Acumatica sync.",
+                workspace.DealId, existing.ProjectId);
+            return new DocumentSetResult(Created: false, existing.Url);
+        }
+
         if (existing is not null)
         {
-            _logger.LogInformation("Scoping workspace for deal {DealId} already exists at {Url}; updating.", workspace.DealId, existing);
-            await ApplyScopingMetadataAsync(ctx, existing, workspace, cancellationToken);
-            await ApplyScopingPermissionsAsync(ctx, existing, workspace, destination, cancellationToken);
-            return new DocumentSetResult(Created: false, existing);
+            _logger.LogInformation("Scoping workspace for deal {DealId} already exists at {Url}; updating.", workspace.DealId, existing.Url);
+
+            // Self-heal the folder name: the customer can change in HubSpot after the room was created, so
+            // the sync is authoritative — re-derive the name each poll and rename in place. (Rename first;
+            // it changes the server-relative URL that metadata + permissions then address.)
+            var (desired, discriminator) = ScopingName(workspace);
+            var url = await TryRenameDocumentSetAsync(ctx, existing.Url, desired, discriminator, cancellationToken);
+
+            await ApplyScopingMetadataAsync(ctx, url, workspace, cancellationToken);
+            await ApplyScopingPermissionsAsync(ctx, url, workspace, destination, cancellationToken);
+            return new DocumentSetResult(Created: false, url);
         }
 
         var parentFolder = list.RootFolder;
@@ -126,12 +182,13 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
             ?? throw new InvalidOperationException(
                 $"Content type '{_options.DocumentSetContentType}' is not enabled on library '{destination.Library}'.");
 
-        var nameBasis = workspace.CustomerName ?? workspace.ProjectName ?? workspace.DealId;
-        var desiredName = SharePointNaming.BuildDocumentSetName(nameBasis, workspace.DealId, _options.DocumentSetNameMaxLength);
-        var setName = await ResolveUniqueNameAsync(ctx, parentFolder, desiredName, workspace.DealId, cancellationToken);
+        // Name on the opportunity number (PQCode) so the folder reads the way people refer to the
+        // engagement — and matches what gets typed into Acumatica at conversion.
+        var (desiredName, nameId) = ScopingName(workspace);
+        var setName = await ResolveUniqueNameAsync(ctx, parentFolder, desiredName, nameId, cancellationToken);
 
-        _logger.LogInformation("Creating scoping workspace '{Name}' for deal {DealId} (practice '{Practice}').",
-            setName, workspace.DealId, workspace.Practice ?? "<none>");
+        _logger.LogInformation("Creating scoping workspace '{Name}' for opportunity {OpportunityId} (deal {DealId}, practice '{Practice}').",
+            setName, workspace.OpportunityId ?? "<none>", workspace.DealId, workspace.Practice ?? "<none>");
 
         var created = SPDocumentSet.Create(ctx, parentFolder, setName, contentType.Id);
         await ctx.ExecuteQueryRetryAsync();
@@ -145,6 +202,19 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         }
 
         return new DocumentSetResult(Created: true, serverRelativeUrl);
+    }
+
+    /// <summary>
+    /// The desired folder name for a scoping workspace, plus the discriminator used to keep it unique.
+    /// Named on the opportunity number (PQCode) so it reads the way people refer to the engagement and
+    /// matches what is typed into Acumatica at conversion; falls back to the deal record id for older deals
+    /// that predate the sequential opportunity number.
+    /// </summary>
+    private (string DesiredName, string Discriminator) ScopingName(ScopingWorkspace workspace)
+    {
+        var discriminator = string.IsNullOrWhiteSpace(workspace.OpportunityId) ? workspace.DealId : workspace.OpportunityId!;
+        var basis = workspace.CustomerName ?? workspace.ProjectName ?? discriminator;
+        return (SharePointNaming.BuildDocumentSetName(basis, discriminator, _options.DocumentSetNameMaxLength), discriminator);
     }
 
     public DocumentSetPlan PlanDocumentSet(AcumaticaProject project)
@@ -288,8 +358,16 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         var key = practice?.Trim();
         if (!string.IsNullOrEmpty(key))
         {
-            var match = _options.PracticeMappings
-                .FirstOrDefault(m => string.Equals(m.Practice.Trim(), key, StringComparison.OrdinalIgnoreCase));
+            // A HubSpot deal's practice is a multi-select, so it arrives as a ';'-delimited list
+            // (e.g. "Estate & Gift;Tangible Assets"). The include-filter upstream is a contains-match, so
+            // match a mapping if ANY token matches — otherwise a legitimately in-scope multi-practice deal
+            // fails to resolve a destination and (with no '*' fallback) throws, jamming the poll.
+            var tokens = key
+                .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+            var match = _options.PracticeMappings.FirstOrDefault(m =>
+                string.Equals(m.Practice.Trim(), key, StringComparison.OrdinalIgnoreCase) ||
+                tokens.Any(t => string.Equals(m.Practice.Trim(), t, StringComparison.OrdinalIgnoreCase)));
             if (match is not null)
             {
                 return match;
@@ -375,6 +453,80 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         return current;
     }
 
+    /// <summary>
+    /// Promotes an existing scoping workspace (born from a HubSpot deal) into the execution phase IN PLACE:
+    /// renames it to the project-id form, stamps the Acumatica metadata — which sets Project Id and flips
+    /// Status to Execution — and re-applies permissions for the delivery team. Nothing moves: the folder,
+    /// its documents, and its client-upload link stay exactly where the scoping phase left them.
+    /// </summary>
+    private async Task<DocumentSetResult> PromoteScopingWorkspaceAsync(
+        ClientContext ctx, string scopingUrl, AcumaticaProject project, PracticeMappingEntry destination, CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Promoting scoping workspace {Url} to project {ProjectId} (HubSpot link {Link}).",
+            scopingUrl, project.ProjectId, project.HubSpotLink);
+
+        // Rename FIRST: it changes the server-relative URL, so everything after must use the new one.
+        var desiredName = SharePointNaming.BuildDocumentSetName(
+            project.CustomerName, project.ProjectId, _options.DocumentSetNameMaxLength);
+        var url = await TryRenameDocumentSetAsync(ctx, scopingUrl, desiredName, project.ProjectId, cancellationToken);
+
+        var signature = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail);
+        await ApplyMetadataAsync(ctx, url, project, signature, cancellationToken);
+
+        // Authoritative reset: the scoping grantees (the deal owner) give way to the delivery team.
+        await ApplyPermissionsAsync(ctx, url, project, destination, cancellationToken);
+
+        // Deliberately NOT EnsureClientUploadsAsync — the scoping phase already created the folder and
+        // minted the link (create-once). Re-running it would add a second folder and a duplicate link.
+        return new DocumentSetResult(Created: false, url, Promoted: true);
+    }
+
+    /// <summary>
+    /// Renames a document set folder in place via FileLeafRef — a rename, not a move: contents, item id, and
+    /// sharing links all follow it. Returns the resulting server-relative URL (a rename changes it), or the
+    /// original URL when the name is already correct or the rename fails. Fail-soft by design: a folder name
+    /// is cosmetic and not worth aborting a promotion over.
+    /// </summary>
+    private async Task<string> TryRenameDocumentSetAsync(
+        ClientContext ctx, string serverRelativeUrl, string desiredName, string discriminator, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var folder = ctx.Web.GetFolderByServerRelativeUrl(ToServerRelative(serverRelativeUrl));
+            ctx.Load(folder, f => f.Name, f => f.ParentFolder);
+            var item = folder.ListItemAllFields;
+            ctx.Load(item);
+            await ctx.ExecuteQueryRetryAsync();
+
+            var currentName = folder.Name;
+            if (string.Equals(currentName, desiredName, StringComparison.Ordinal))
+            {
+                return serverRelativeUrl;
+            }
+
+            // A sibling may already hold the desired name (same customer prefix, different engagement).
+            var uniqueName = await ResolveUniqueNameAsync(ctx, folder.ParentFolder, desiredName, discriminator, cancellationToken);
+            item["FileLeafRef"] = uniqueName;
+            item.Update();
+            await ctx.ExecuteQueryRetryAsync();
+
+            ctx.Load(item, i => i["FileRef"]);
+            await ctx.ExecuteQueryRetryAsync();
+
+            _logger.LogInformation("Renamed document set {OldName} to {NewName}.", currentName, uniqueName);
+            var renamedUrl = item["FileRef"]?.ToString();
+            return string.IsNullOrWhiteSpace(renamedUrl) ? serverRelativeUrl : renamedUrl!;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Failed to rename the document set at {Url} to {Name}; keeping the existing name.",
+                serverRelativeUrl, desiredName);
+            return serverRelativeUrl;
+        }
+    }
+
     private async Task ApplyMetadataAsync(
         ClientContext ctx, string serverRelativeUrl, AcumaticaProject project, string? signature, CancellationToken cancellationToken)
     {
@@ -398,6 +550,11 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         SetIfPresent(item, _options.ProjectNameColumn, project.ProjectName);
         SetIfPresent(item, _options.PracticeColumn, project.Practice);
         SetIfPresent(item, _options.StatusColumn, _options.ProjectStatusValue);
+
+        // Deliberately does NOT touch the HubSpot deal-id / opportunity-number columns: those are written
+        // by the scoping phase and are what let this workspace be recognised as already-promoted. Acumatica
+        // only knows the PQCode value, which may be either of them — overwriting one from the other would
+        // corrupt the link. Project Id + Status above are what mark the promotion.
 
         if (_options.ProjectManagerIsPersonColumn)
         {
@@ -619,6 +776,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         SetIfPresent(item, _options.ProjectNameColumn, ws.ProjectName);
         SetIfPresent(item, _options.PracticeColumn, ws.Practice);
         SetIfPresent(item, _options.HubSpotDealIdColumn, ws.DealId);
+        SetIfPresent(item, _options.OpportunityIdColumn, ws.OpportunityId);
         SetIfPresent(item, _options.StatusColumn, _options.ScopingStatusValue);
 
         if (_options.ProjectManagerIsPersonColumn && pmValue is not null && item.FieldValues.ContainsKey(_options.ProjectManagerColumn))
@@ -660,24 +818,64 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         _logger.LogInformation("Created column '{Column}'.", col);
     }
 
-    /// <summary>Finds a document set (FSObjType=1) whose <paramref name="column"/> equals <paramref name="value"/>.</summary>
-    private async Task<string?> FindExistingByColumnAsync(
+    /// <summary>
+    /// Finds the document set (FSObjType=1) whose <paramref name="column"/> equals <paramref name="value"/>,
+    /// returning its URL together with its Project Id column — a blank Project Id means the workspace is
+    /// still in the scoping phase, a populated one means it has already been promoted.
+    /// </summary>
+    private async Task<TrackedDocSet?> FindByColumnAsync(
         ClientContext ctx, List list, string column, string value, CancellationToken cancellationToken)
     {
+        if (string.IsNullOrWhiteSpace(column) || string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
         var safeValue = System.Security.SecurityElement.Escape(value) ?? value;
+        var pidCol = _options.ProjectIdColumn;
         var query = new CamlQuery
         {
             ViewXml =
                 "<View Scope='RecursiveAll'><Query><Where><And>" +
                 $"<Eq><FieldRef Name='{column}'/><Value Type='Text'>{safeValue}</Value></Eq>" +
                 "<Eq><FieldRef Name='FSObjType'/><Value Type='Integer'>1</Value></Eq>" +
-                "</And></Where></Query><RowLimit>1</RowLimit></View>",
+                "</And></Where></Query>" +
+                $"<ViewFields><FieldRef Name='FileRef'/><FieldRef Name='{pidCol}'/></ViewFields>" +
+                "<RowLimit>2</RowLimit></View>",
         };
         var items = list.GetItems(query);
-        ctx.Load(items, c => c.Include(i => i.FileSystemObjectType, i => i["FileRef"]));
+        ctx.Load(items, c => c.Include(i => i.FileSystemObjectType, i => i["FileRef"], i => i[pidCol]));
         await ctx.ExecuteQueryRetryAsync();
-        return items.Count > 0 ? items[0]["FileRef"]?.ToString() : null;
+        if (items.Count == 0)
+        {
+            return null;
+        }
+
+        if (items.Count > 1)
+        {
+            // Two document sets share this value. HubSpot does contain the occasional duplicate opportunity
+            // number, so this is reachable via the PQCode → OpportunityId match. Binding to whichever row
+            // came back first would silently attach an engagement to another one's folder — wrong metadata
+            // and wrong permissions on a client folder — so refuse and let the caller create its own. The
+            // warning is the signal to fix the source data.
+            _logger.LogWarning(
+                "Column {Column} value {Value} matches {Count}+ document sets; refusing to guess which. Resolve the duplicate in the source system.",
+                column, value, items.Count);
+            return null;
+        }
+
+        var url = items[0]["FileRef"]?.ToString();
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return null;
+        }
+
+        var projectId = items[0].FieldValues.TryGetValue(pidCol, out var pid) ? pid?.ToString()?.Trim() : null;
+        return new TrackedDocSet(url!, projectId);
     }
+
+    /// <summary>A document set located by lookup: where it lives, and the project id it carries (if any).</summary>
+    private sealed record TrackedDocSet(string Url, string? ProjectId);
 
     /// <summary>
     /// Ensures the client-upload-link column exists as a plain single-line Text field (so the URL is a

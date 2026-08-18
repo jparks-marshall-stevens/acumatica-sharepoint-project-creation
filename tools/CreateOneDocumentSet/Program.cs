@@ -109,7 +109,10 @@ if (args.Contains("--delete"))
 // 2. Create (or update if it already exists).
 Console.WriteLine("Creating document set…");
 var result = await sharePoint.EnsureProjectDocumentSetAsync(project, CancellationToken.None);
-Console.WriteLine($"✔ {(result.Created ? "CREATED" : "already existed — metadata updated")}: {result.ServerRelativeUrl}");
+var outcome = result.Created ? "CREATED"
+    : result.Promoted ? "PROMOTED from a scoping workspace (renamed in place)"
+    : "already existed — metadata updated";
+Console.WriteLine($"✔ {outcome}: {result.ServerRelativeUrl}");
 Console.WriteLine();
 
 // 3. Read the metadata back to verify what actually landed.

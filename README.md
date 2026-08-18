@@ -12,10 +12,10 @@ Each workspace is stamped with metadata, permissioned to the right people, and (
 `Client Uploads` subfolder with an anonymous **Request-files** link. Currently scoped to the
 **Estate & Gift** practice → the **GiftEstate** SharePoint site.
 
-The two sources run on **independent timers** (they hit different systems and write different,
-idempotent doc sets). A shared `Status` column distinguishes the phases and sets up in-place
-**promotion** (Scoping → Execution) when a deal becomes a project — see
-[`docs/hubspot-scoping-integration.md`](docs/hubspot-scoping-integration.md).
+The two sources run on **independent timers** (they hit different systems, and each writes its own
+idempotent doc sets). One engagement gets **one workspace for its whole life**: it is born at scoping from a
+HubSpot deal and **promoted in place** when it reaches the ERP — renamed, restamped, re-permissioned, never
+moved and never duplicated. See [`docs/hubspot-scoping-integration.md`](docs/hubspot-scoping-integration.md).
 
 ## How it works
 
@@ -47,6 +47,35 @@ Beyond create-on-new, two timers keep **already-tracked** Acumatica doc sets cur
 
 Permissions include the **project team** (from the `EPEmployeeContract` team GI) alongside PM + leader.
 
+### Promotion (scoping → execution)
+
+When a HubSpot deal becomes an Acumatica project, the existing scoping workspace is **converted in place**
+rather than duplicated. The link is the HubSpot **opportunity number** (`quote_number`, labelled *Opportunity
+#*, e.g. `PQ005871`), recorded on the Acumatica project and exposed by the GI as **`PQCode`**
+(`Acumatica:HubSpotLinkField`).
+
+Lookup order on each Acumatica poll:
+
+1. **`Project Id`** column — already tracked, just refresh metadata + permissions.
+2. Only if `PQCode` is non-blank: the **`OpportunityId`** column, then the **`HubSpotDealId`** column. A hit on
+   either is a **promotion** — so it links whether a person recorded the opportunity number or pasted the raw
+   HubSpot record id.
+3. No match → a fresh document set (a project that skipped scoping).
+
+A promotion renames the folder to the project-id form (`FileLeafRef` — a rename, not a move: contents, item
+id, and the client-upload link all follow it), stamps `Project Id` and `Status = Execution`, and re-applies
+permissions for the delivery team. It does **not** re-run the client-uploads step — the scoping phase already
+created that folder and minted its link. Reported separately as `Promoted=` in the cycle log and in
+`ProjectSyncResult`.
+
+Failure modes, both logged as warnings rather than silently swallowed:
+- **`PQCode` blank** → the engagement gets a second folder; merge by hand. `ProjectSyncDryRun` reports how many
+  projects in the window carry a link at all.
+- **Two projects, one `PQCode`** → the second does not hijack the first one's workspace; it gets its own.
+
+> Note: `PQCode` is currently **null on every GI row**, so promotion does not fire yet. Populating it at
+> conversion is a process step, not a code change.
+
 ### Client uploads (optional)
 When `SharePoint:CreateClientUploadLink = true`, each new workspace gets a `Client Uploads` subfolder and
 an anonymous, upload-only ("Request files") Microsoft **Graph** link (30-day expiry) stamped as a plain
@@ -57,11 +86,14 @@ text value in the `ClientUploadLink` column (copy-and-send to the client). Requi
 ### Key design points
 - **Moving-forward only.** `State:FirstRunLookbackHours = 0`, so the first run stamps the
   watermark at "now" and only new projects are processed — no historical backfill.
-- **Folder naming.** `{first N chars of Customer Name} ({Project Id})` (`N` =
-  `SharePoint:DocumentSetNameMaxLength`, default 10), sanitized for SharePoint (e.g.
-  `Robert Pal (10-31-21-74663)`). Because the unique Project Id is part of the name, names are
-  effectively unique; **dedup is still keyed on the Project Id column**. Blank customer names fall
-  back to just the id.
+- **Folder naming.** `{first N chars of Customer Name} ({id})` (`N` =
+  `SharePoint:DocumentSetNameMaxLength`, default 40), sanitized for SharePoint. The id is the **Project Id**
+  for Acumatica sets (`Robert Palmer (10-31-21-74663)`) and the **opportunity number / PQCode** for scoping
+  sets (`Blackstone Dilworth (PQ007180)`). Because the id is unique the names are effectively unique;
+  **dedup is still keyed on the metadata columns, never the name**. Blank customer names fall back to the id.
+  - Note the name is written **once at creation and never revisited**, while `Customer Name` is refreshed on
+    every poll — so a customer that resolves differently later (e.g. the deal's client contact gets filled
+    in) leaves the folder name stale. `BackfillOpportunityIds` re-syncs scoping folder names.
 - **People field.** The GI's `ProjectManager` column returns the PM's **email**; the function
   resolves it to a SharePoint user (`EnsureUser`). Emails outside the tenant are left blank (fail-soft).
 - **Fail-safe ordering.** Oldest-first; if a project fails the cycle halts and the watermark holds
@@ -96,6 +128,10 @@ Each reads config from `local.settings.json` and needs no Functions runtime:
 - **`SharePointHardening [--lock]`** — reports/enables versioning + recycle bin; locks the `Current` folder to code-only creation.
 - **`CreateOneDocumentSet -- <ProjectId> [--delete]`** — creates/updates one Acumatica set; reads back metadata + permissions.
 - **`ReconcileOnce [full|incremental]`** — runs a single reconcile pass against the real systems.
+- **`BackfillOpportunityIds [--apply]`** — stamps `OpportunityId` on scoping workspaces created before that
+  column existed, and renames folders still named after the raw deal id to the `{customer} ({PQCode})` form
+  (dry-run by default; creates the column on `--apply`). Batch-reads deals by id, so deals that have since
+  closed are still resolved. Touches that column and the folder leaf name only.
 - **`HubSpotOAuthSetup`** — one-time: captures an OAuth refresh token via a local redirect.
 - **`HubSpotConnectivityTest`** — verifies the HubSpot token; lists pipelines/stages + candidate properties.
 - **`HubSpotPollOnce -- [lookbackHours]`** — dry-run plan of scoping workspaces that would be created.
@@ -115,6 +151,8 @@ user (`Username`/`Password`) plus the connected app's `ClientId`/`ClientSecret`.
 - **`IncludedPractices`** allow-list (indexed): only these practices are synced; others are skipped
   but still advance the watermark. **`ExcludedProjectIds`**: hard-ignore list (e.g. `X`, the
   Non-Project Code) checked before the practice filter.
+- **`HubSpotLinkField = PQCode`** — the GI column carrying the HubSpot opportunity number, which drives
+  promotion (see above). Blank disables the promotion path entirely.
 
 ### SharePoint (`SharePoint:*`)
 App-only **certificate** auth (Entra app `SharePoint:ClientId`, tenant `SharePoint:AzureAdTenant`).
@@ -146,12 +184,24 @@ To add a practice: add an entry (`:1:…`) with its own site/library, add the pr
 A second source: the **`HubSpotScopingPoll`** timer (`%HubSpotScopingSchedule%`) polls HubSpot deals
 modified since a persisted watermark (`hubspot-deals`) and creates/updates a scoping workspace for each
 in-scope deal, keyed on `HubSpotDealId`, with `Status = Scoping` and access for the deal **owner** +
-practice leader.
+practice leader. A workspace that has already been promoted (its `Project Id` column is set) is skipped —
+otherwise a later edit to the deal would demote it and wipe the delivery team's access.
+
+The sync is **authoritative** over an un-promoted scoping room: on each poll it re-stamps metadata,
+re-derives the folder name from the current customer + PQCode and renames in place, and resets permissions
+(break inheritance; Owners + deal owner + practice leader). Manual changes to a scoping room's name or
+permissions are therefore reverted. Note the cadence: a room is only re-processed when **its deal is
+modified** in HubSpot (a customer-name change counts), so drift introduced without a subsequent deal edit
+persists until the deal next changes. `BackfillOpportunityIds` re-syncs names on demand in the meantime.
 
 - **Auth**: OAuth refresh-token (`ClientId`/`ClientSecret`/`RefreshToken`) preferred, or a static
   private-app token (`AccessToken`) as a fallback. Token is a Key Vault secret in production.
 - **In scope**: `PracticeProperty = practices` (a multi-select) contains an `IncludedPractices` value
   (e.g. `Estate & Gift`), **and** the deal stage is not in `TerminalStageIds` (Won/Lost/Closed).
+- **`OpportunityIdProperty = quote_number`** — the *Opportunity #* property, stamped onto the workspace's
+  `SharePoint:OpportunityIdColumn` on every poll and matched against `PQCode` at promotion. Deliberately
+  separate from the deal id: the deal id is immutable identity (so it stays the idempotency key), while an
+  opportunity number can be assigned or corrected later.
 - **Customer name**: resolved from the deal's **client contact** — the contact's `company` text, then its
   associated company name, then the deal name (order via `CustomerCompanyTextFirst`).
 - **Watermark + floors**: `FirstRunLookbackHours` (default 0 = moving-forward); `CreatedAfter` — an

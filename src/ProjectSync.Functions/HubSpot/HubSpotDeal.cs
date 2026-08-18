@@ -20,6 +20,13 @@ public sealed record HubSpotDeal
     /// <summary>Id of the deal's client contact (from the client-contact-id property), if set.</summary>
     public string? ClientContactId { get; init; }
 
+    /// <summary>
+    /// Human-facing opportunity number (HubSpot:OpportunityIdProperty) — the value a person types into the
+    /// Acumatica PQCode field at conversion, and therefore the correlation key for promotion. Null when the
+    /// property isn't configured or isn't set on this deal yet.
+    /// </summary>
+    public string? OpportunityId { get; init; }
+
     public DateTimeOffset? CreatedAt { get; init; }
     public DateTimeOffset? ModifiedAt { get; init; }
 

@@ -93,6 +93,7 @@ public sealed class ProjectSyncProcessor
 
         var watermark = lastRun ?? queryFrom;
         var created = 0;
+        var promoted = 0;
         var updated = 0;
         var planned = 0;
         var skipped = 0;
@@ -145,6 +146,7 @@ public sealed class ProjectSyncProcessor
                         ProjectManager = project.ProjectManager,
                         ProjectManagerEmail = project.ProjectManagerEmail,
                         Practice = project.Practice,
+                        HubSpotLink = project.HubSpotLink,
                         CreatedDateTime = project.CreatedDateTime,
                         TargetSiteUrl = p.SiteUrl,
                         TargetLibrary = p.Library,
@@ -162,6 +164,10 @@ public sealed class ProjectSyncProcessor
                     if (result.Created)
                     {
                         created++;
+                    }
+                    else if (result.Promoted)
+                    {
+                        promoted++;
                     }
                     else
                     {
@@ -193,8 +199,8 @@ public sealed class ProjectSyncProcessor
         }
 
         _logger.LogInformation(
-            "ProjectSync complete{DryRun}. Found={Found}, Created={Created}, UpdatedExisting={Updated}, Planned={Planned}, Skipped={Skipped}, watermark={Watermark:o}",
-            dryRun ? " (DRY RUN)" : string.Empty, projects.Count, created, updated, planned, skipped, watermark);
+            "ProjectSync complete{DryRun}. Found={Found}, Created={Created}, Promoted={Promoted}, UpdatedExisting={Updated}, Planned={Planned}, Skipped={Skipped}, watermark={Watermark:o}",
+            dryRun ? " (DRY RUN)" : string.Empty, projects.Count, created, promoted, updated, planned, skipped, watermark);
 
         return new ProjectSyncResult
         {
@@ -202,6 +208,7 @@ public sealed class ProjectSyncProcessor
             Found = projects.Count,
             Created = created,
             Updated = updated,
+            Promoted = promoted,
             Planned = planned,
             Skipped = skipped,
             HadFailure = hadFailure,

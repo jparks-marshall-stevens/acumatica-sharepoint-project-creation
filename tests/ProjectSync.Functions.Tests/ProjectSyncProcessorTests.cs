@@ -283,6 +283,32 @@ public class ProjectSyncProcessorTests
     }
 
     [Fact]
+    public async Task PromotedSets_AreCountedSeparatelyFromCreatedAndUpdated()
+    {
+        _lastRun.Setup(s => s.GetLastRunAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Now.AddHours(-2));
+
+        var fresh = Project("P1", Now.AddMinutes(-50));
+        var converted = Project("P2", Now.AddMinutes(-40)) with { HubSpotLink = "PQ-1001" };
+        _acumatica
+            .Setup(a => a.GetProjectsCreatedAfterAsync(It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new[] { fresh, converted });
+
+        _sharePoint.Setup(s => s.EnsureProjectDocumentSetAsync(fresh, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DocumentSetResult(Created: true, "/p1"));
+        // An engagement that began as a scoping workspace: promoted in place, so neither created nor updated.
+        _sharePoint.Setup(s => s.EnsureProjectDocumentSetAsync(converted, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DocumentSetResult(Created: false, "/scoping-p2", Promoted: true));
+        _lastRun.Setup(s => s.SetLastRunAsync(It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var result = await CreateSut().RunAsync(CancellationToken.None);
+
+        Assert.Equal(1, result.Created);
+        Assert.Equal(1, result.Promoted);
+        Assert.Equal(0, result.Updated);
+    }
+
+    [Fact]
     public async Task ReconcileIncremental_NoTeamChanges_ShortCircuits_NoSharePoint()
     {
         var wm = Now.AddMinutes(-30);

@@ -38,7 +38,7 @@ public sealed class SharePointOptions
     /// Number of leading characters of the customer name used in the document-set folder name,
     /// which is "{customer[..N]} | {project id}".
     /// </summary>
-    public int DocumentSetNameMaxLength { get; set; } = 10;
+    public int DocumentSetNameMaxLength { get; set; } = 40;
 
     /// <summary>When true, set explicit permissions on each document set (project manager + practice leader).</summary>
     public bool SetProjectPermissions { get; set; } = true;
@@ -81,6 +81,15 @@ public sealed class SharePointOptions
 
     /// <summary>Internal name of the column holding the HubSpot deal id (scoping idempotency key). Auto-created.</summary>
     public string HubSpotDealIdColumn { get; set; } = "HubSpotDealId";
+
+    /// <summary>
+    /// Internal name of the column holding the HubSpot opportunity number (HubSpot:OpportunityIdProperty).
+    /// This is the correlation key an Acumatica project's PQCode is matched against to promote a scoping
+    /// workspace in place. Kept separate from the deal-id column because the deal id is immutable identity
+    /// (so it stays the idempotency key) while the opportunity number can be assigned or changed later.
+    /// Auto-created.
+    /// </summary>
+    public string OpportunityIdColumn { get; set; } = "OpportunityId";
 
     /// <summary>Internal name of the column holding the workspace lifecycle status (Scoping/Active). Auto-created.</summary>
     public string StatusColumn { get; set; } = "Status";
