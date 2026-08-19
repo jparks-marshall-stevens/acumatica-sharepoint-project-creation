@@ -58,7 +58,8 @@ var sender = new GraphEmailSender(contextFactory, spOptions, notifyOptions, logg
 var notifier = new WorkspaceNotifier(sender, notifyOptions, loggerFactory.CreateLogger<WorkspaceNotifier>());
 
 // Fake "live" recipients on purpose — TestMode must redirect all of these to the TestRecipient.
-var fakeLive = new[] { "someone.live@example.com", "another.live@example.com" };
+var admins = spOptions.Value.PracticeMappings.FirstOrDefault()?.AdminEmails ?? new List<string>();
+var fakeLive = new[] { "someone.live@example.com" }.Concat(admins).ToArray();
 const string leader = "bjohnson@marshall-stevens.com";
 
 var scoping = new WorkspaceNotice

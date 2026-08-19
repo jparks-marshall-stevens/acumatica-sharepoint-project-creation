@@ -142,8 +142,13 @@ Console.WriteLine();
 var sender = new GraphEmailSender(contextFactory, spOptions, notifyOptions, loggerFactory.CreateLogger<GraphEmailSender>());
 var notifier = new WorkspaceNotifier(sender, notifyOptions, loggerFactory.CreateLogger<WorkspaceNotifier>());
 
-// Fake live recipient to prove the redirect; TestMode routes it to TestRecipient only.
-await notifier.NotifyCreatedAsync(notice, new[] { "someone.live@example.com" }, mapping.PracticeLeaderEmail, CancellationToken.None);
+// Recipients mirror production: a sample owner/PM (stand-in for the real one) PLUS the practice admins
+// from config (e.g. Michelle). TestMode still routes everything to TestRecipient only; the intended list
+// in the subject shows who would really receive it.
+var recipients = new List<string?>();
+recipients.Add(isScoping ? "deal.owner.sample@example.com" : "project.pm.sample@example.com");
+recipients.AddRange(mapping.AdminEmails);
+await notifier.NotifyCreatedAsync(notice, recipients, mapping.PracticeLeaderEmail, CancellationToken.None);
 
 Console.WriteLine();
 Console.WriteLine($"✔ Sent to {n.TestRecipient}. Click 'Open the dataroom' and 'Client file-request link' to verify both resolve.");
