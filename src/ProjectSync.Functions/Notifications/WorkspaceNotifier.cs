@@ -65,10 +65,29 @@ public sealed class WorkspaceNotifier
             }
 
             var (subject, html) = build();
+
+            // Test mode: redirect the whole thing to the test recipient so no live person is emailed, and
+            // surface the intended recipients in the subject. This is the rollout safety valve.
+            var actualTo = to;
+            string? bcc = string.IsNullOrWhiteSpace(_options.BccAddress) ? null : _options.BccAddress.Trim();
+            if (_options.TestMode)
+            {
+                if (string.IsNullOrWhiteSpace(_options.TestRecipient))
+                {
+                    _logger.LogWarning("TestMode is on but TestRecipient is blank; not sending {Kind} for {Customer}.", kind, notice.CustomerName);
+                    return;
+                }
+
+                subject = $"[TEST] {subject}  (intended: {string.Join(", ", to)})";
+                actualTo = new List<string> { _options.TestRecipient.Trim() };
+                bcc = null;
+            }
+
             await _sender.SendAsync(new EmailMessage
             {
-                To = to,
-                Bcc = string.IsNullOrWhiteSpace(_options.BccAddress) ? null : _options.BccAddress.Trim(),
+                To = actualTo,
+                Bcc = bcc,
+                ReplyTo = string.IsNullOrWhiteSpace(_options.ReplyToAddress) ? null : _options.ReplyToAddress.Trim(),
                 Subject = subject,
                 HtmlBody = html,
             }, cancellationToken);

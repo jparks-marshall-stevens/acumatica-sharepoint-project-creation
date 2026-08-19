@@ -35,4 +35,14 @@ public sealed class NotificationOptions
     /// this at it for the broadest support.
     /// </summary>
     public string LogoUrl { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Safety valve for rollout: when true, EVERY notification is redirected to <see cref="TestRecipient"/>
+    /// only — no live recipients receive anything. The intended recipients are shown in the subject so the
+    /// tester can see who it would have gone to. Turn off to go live.
+    /// </summary>
+    public bool TestMode { get; set; } = false;
+
+    /// <summary>The sole recipient while <see cref="TestMode"/> is on.</summary>
+    public string TestRecipient { get; set; } = string.Empty;
 }

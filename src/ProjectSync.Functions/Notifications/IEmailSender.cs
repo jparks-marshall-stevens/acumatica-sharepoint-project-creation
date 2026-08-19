@@ -5,6 +5,7 @@ public sealed record EmailMessage
 {
     public required IReadOnlyList<string> To { get; init; }
     public string? Bcc { get; init; }
+    public string? ReplyTo { get; init; }
     public required string Subject { get; init; }
     public required string HtmlBody { get; init; }
 }

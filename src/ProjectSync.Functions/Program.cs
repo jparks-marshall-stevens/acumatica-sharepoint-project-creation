@@ -59,7 +59,7 @@ var host = new HostBuilder()
         services.AddSingleton<ILastRunStore, BlobLastRunStore>();
 
         // Notifications (stubbed sender for now — swap the registration for a Graph sender to go live).
-        services.AddSingleton<IEmailSender, LoggingEmailSender>();
+        services.AddSingleton<IEmailSender, GraphEmailSender>();
         services.AddSingleton<WorkspaceNotifier>();
 
         // SharePoint.
