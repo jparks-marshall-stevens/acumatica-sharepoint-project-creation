@@ -60,7 +60,16 @@ public sealed record ReconcileResult
     public int Updated { get; init; }
     public int Unchanged { get; init; }
     public int NotTracked { get; init; }
+
+    /// <summary>
+    /// Projects whose folder was renamed since last sweep: their dataroom URL was refreshed in SharePoint,
+    /// and the caller should re-write the new URL to Acumatica's DATAURL attribute.
+    /// </summary>
+    public IReadOnlyList<UrlResync> UrlResyncs { get; init; } = Array.Empty<UrlResync>();
 }
+
+/// <summary>A project whose dataroom URL changed (folder renamed) and needs re-writing to Acumatica.</summary>
+public sealed record UrlResync(string ProjectId, string DataroomUrl);
 
 /// <summary>
 /// Outcome of ensuring one document set. <paramref name="Promoted"/> marks the special case where an

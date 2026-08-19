@@ -261,6 +261,7 @@ public sealed class ProjectSyncProcessor
 
         var desired = await BuildDesiredProjectsAsync(teamRows, cancellationToken);
         var result = await _sharePoint.ReconcileAsync(desired, changed, cancellationToken);
+        await ResyncRenamedUrlsAsync(result, cancellationToken);
         await _lastRunStore.SetWatermarkAsync(ReconcileTeamWatermark, MaxModified(teamRows), cancellationToken);
 
         _logger.LogInformation("Reconcile (incremental): {Changed} team-changed project(s); updated {Updated}, unchanged {Unchanged}.",
@@ -274,6 +275,7 @@ public sealed class ProjectSyncProcessor
         var teamRows = await _acumatica.GetTeamRowsAsync(cancellationToken);
         var desired = await BuildDesiredProjectsAsync(teamRows, cancellationToken);
         var result = await _sharePoint.ReconcileAsync(desired, onlyProjectIds: null, cancellationToken);
+        await ResyncRenamedUrlsAsync(result, cancellationToken);
 
         // A full sweep covers everything up to now — advance the incremental cursor too.
         await _lastRunStore.SetWatermarkAsync(ReconcileTeamWatermark, MaxModified(teamRows), cancellationToken);
@@ -281,6 +283,25 @@ public sealed class ProjectSyncProcessor
         _logger.LogInformation("Reconcile (full): considered {Considered}, updated {Updated}, unchanged {Unchanged}, notTracked {NotTracked}.",
             result.Considered, result.Updated, result.Unchanged, result.NotTracked);
         return result;
+    }
+
+    /// <summary>
+    /// Re-writes Acumatica's DATAURL for any workspace whose SharePoint folder was renamed since the last
+    /// sweep (detected by the reconcile). Fail-soft per project — a write-back failure never breaks the pass.
+    /// </summary>
+    private async Task ResyncRenamedUrlsAsync(ReconcileResult result, CancellationToken cancellationToken)
+    {
+        foreach (var r in result.UrlResyncs)
+        {
+            try
+            {
+                await _acumatica.WriteProjectUrlsAsync(r.ProjectId, r.DataroomUrl, clientUrl: null, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "DATAURL resync to Acumatica failed for project {ProjectId}; continuing.", r.ProjectId);
+            }
+        }
     }
 
     private DateTimeOffset MaxModified(IReadOnlyList<TeamMemberRow> teamRows)

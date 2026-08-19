@@ -122,6 +122,14 @@ public sealed class SharePointOptions
     /// </summary>
     public string ClientUploadLinkColumn { get; set; } = "ClientUploadLink";
 
+    /// <summary>
+    /// Internal name of a text column on the document set that holds the current dataroom URL. Stamped on
+    /// creation/promotion and kept current on reconcile: it is both user-visible metadata and the marker the
+    /// reconcile compares against to notice a manual folder rename (whereupon it re-writes Acumatica's DATAURL).
+    /// Created automatically if absent.
+    /// </summary>
+    public string DataroomUrlColumn { get; set; } = "DataroomUrl";
+
     /// <summary>Days until the upload link expires (Graph <c>expirationDateTime</c>). Default 30.</summary>
     public int ClientUploadLinkExpirationDays { get; set; } = 30;
 
