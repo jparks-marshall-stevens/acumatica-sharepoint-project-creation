@@ -28,4 +28,11 @@ public sealed class NotificationOptions
     /// BCC'd on every notification (for oversight during rollout). Blank = no BCC.
     /// </summary>
     public string BccAddress { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Absolute URL of the Marshall &amp; Stevens logo shown in the email header (white wordmark on the
+    /// brand-teal bar). Blank = no logo. NOTE: many email clients don't render SVG; host a PNG and point
+    /// this at it for the broadest support.
+    /// </summary>
+    public string LogoUrl { get; set; } = string.Empty;
 }

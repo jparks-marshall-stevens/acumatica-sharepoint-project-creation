@@ -36,34 +36,37 @@ public sealed record WorkspaceNotice
 /// <summary>Builds the subject line and HTML body for each workspace email (email-safe, inline styles).</summary>
 public static class WorkspaceEmail
 {
-    private const string Evergreen = "#1F5240";
-    private const string Brass = "#8F6426";
+    // Marshall & Stevens brand teal (deep enough for legible white text/logo on the header bar).
+    private const string BrandTeal = "#2C7E85";
 
-    public static (string Subject, string Html) BuildCreated(WorkspaceNotice n)
+    public static (string Subject, string Html) BuildCreated(WorkspaceNotice n, string? logoUrl = null)
     {
         var kind = n.Phase == WorkspacePhase.Scoping ? "scoping" : "project";
         var subject = $"New {kind} dataroom — {Suffix(n)}";
-        var accent = n.Phase == WorkspacePhase.Scoping ? Brass : Evergreen;
         var kicker = n.Phase == WorkspacePhase.Scoping ? "Scoping · Gift &amp; Estate" : "Active project · Gift &amp; Estate";
         var title = n.Phase == WorkspacePhase.Scoping ? "A scoping dataroom is ready" : "A project dataroom is ready";
         var intro = "A workspace has been created for the engagement below. You're receiving this because you have access to it.";
-        return (subject, Render(n, accent, kicker, title, intro));
+        return (subject, Render(n, BrandTeal, kicker, title, intro, logoUrl));
     }
 
-    public static (string Subject, string Html) BuildAccessAdded(WorkspaceNotice n)
+    public static (string Subject, string Html) BuildAccessAdded(WorkspaceNotice n, string? logoUrl = null)
     {
         var subject = $"You've been added — {Suffix(n)}";
         const string kicker = "Access granted · Gift &amp; Estate";
         const string title = "You now have access to a dataroom";
         const string intro = "You've been given access to the workspace below, so you can start work. You're receiving this because your access was just added.";
-        return (subject, Render(n, Evergreen, kicker, title, intro));
+        return (subject, Render(n, BrandTeal, kicker, title, intro, logoUrl));
     }
 
     private static string Suffix(WorkspaceNotice n) =>
         string.IsNullOrWhiteSpace(n.IdValue) ? n.CustomerName : $"{n.CustomerName} ({n.IdValue})";
 
-    private static string Render(WorkspaceNotice n, string accent, string kicker, string title, string intro)
+    private static string Render(WorkspaceNotice n, string accent, string kicker, string title, string intro, string? logoUrl)
     {
+        var logo = string.IsNullOrWhiteSpace(logoUrl)
+            ? string.Empty
+            : $"<img src=\"{Attr(logoUrl!)}\" alt=\"Marshall &amp; Stevens\" width=\"150\" style=\"display:block;height:26px;width:auto;margin:0 0 12px;border:0;\" />";
+
         var rows = new StringBuilder();
         Row(rows, "Client", n.CustomerName);
         Row(rows, n.Phase == WorkspacePhase.Scoping ? "Engagement" : "Project", n.EngagementName);
@@ -83,7 +86,7 @@ public static class WorkspaceEmail
 <table role=""presentation"" width=""100%"" cellpadding=""0"" cellspacing=""0""><tr><td align=""center"">
 <table role=""presentation"" width=""600"" cellpadding=""0"" cellspacing=""0"" style=""max-width:600px;background:#ffffff;border-radius:10px;overflow:hidden;"">
   <tr><td style=""padding:20px 28px;background:{accent};color:#ffffff;"">
-    <div style=""font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;opacity:.85;margin:0 0 4px;"">{kicker}</div>
+    {logo}<div style=""font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;opacity:.85;margin:0 0 4px;"">{kicker}</div>
     <div style=""font-family:Georgia,'Times New Roman',serif;font-size:21px;line-height:1.2;"">{title}</div>
   </td></tr>
   <tr><td style=""padding:24px 28px 28px;color:#1f2a24;font-size:15px;line-height:1.62;"">

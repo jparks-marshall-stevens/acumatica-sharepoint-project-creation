@@ -28,12 +28,12 @@ public sealed class WorkspaceNotifier
     /// <summary>Notifies everyone with access (minus the practice leader) that a workspace was created.</summary>
     public Task NotifyCreatedAsync(
         WorkspaceNotice notice, IEnumerable<string?> recipients, string? leaderEmail, CancellationToken cancellationToken)
-        => SendAsync(() => WorkspaceEmail.BuildCreated(notice), recipients, leaderEmail, "created", notice, cancellationToken);
+        => SendAsync(() => WorkspaceEmail.BuildCreated(notice, _options.LogoUrl), recipients, leaderEmail, "created", notice, cancellationToken);
 
     /// <summary>Notifies people who were just granted access (minus the practice leader) that they can start.</summary>
     public Task NotifyAccessAddedAsync(
         WorkspaceNotice notice, IEnumerable<string?> newlyAdded, string? leaderEmail, CancellationToken cancellationToken)
-        => SendAsync(() => WorkspaceEmail.BuildAccessAdded(notice), newlyAdded, leaderEmail, "access-added", notice, cancellationToken);
+        => SendAsync(() => WorkspaceEmail.BuildAccessAdded(notice, _options.LogoUrl), newlyAdded, leaderEmail, "access-added", notice, cancellationToken);
 
     private async Task SendAsync(
         Func<(string Subject, string Html)> build,
