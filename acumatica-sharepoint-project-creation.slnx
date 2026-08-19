@@ -17,6 +17,7 @@
     <Project Path="tools/ProjectSyncDryRun/ProjectSyncDryRun.csproj" />
     <Project Path="tools/ReconcileOnce/ReconcileOnce.csproj" />
     <Project Path="tools/SendTestEmail/SendTestEmail.csproj" />
+    <Project Path="tools/SendWorkspaceTestEmail/SendWorkspaceTestEmail.csproj" />
     <Project Path="tools/SharePointConnectivityTest/SharePointConnectivityTest.csproj" />
     <Project Path="tools/SharePointHardening/SharePointHardening.csproj" />
   </Folder>
