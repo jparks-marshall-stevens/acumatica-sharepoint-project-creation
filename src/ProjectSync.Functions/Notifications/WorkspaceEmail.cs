@@ -1,0 +1,126 @@
+using System.Net;
+using System.Text;
+
+namespace ProjectSync.Notifications;
+
+/// <summary>The lifecycle phase a workspace notification is about.</summary>
+public enum WorkspacePhase
+{
+    Scoping,
+    Execution,
+}
+
+/// <summary>Everything an email needs to describe a workspace to its recipients.</summary>
+public sealed record WorkspaceNotice
+{
+    public required WorkspacePhase Phase { get; init; }
+    public required string CustomerName { get; init; }
+
+    /// <summary>Project name (execution) or deal/engagement name (scoping).</summary>
+    public string? EngagementName { get; init; }
+
+    /// <summary>Label for the identifier row, e.g. "Project ID" or "Opportunity #".</summary>
+    public string? IdLabel { get; init; }
+    public string? IdValue { get; init; }
+
+    public string? ProjectManager { get; init; }
+    public string? Practice { get; init; }
+
+    /// <summary>Absolute URL to the document set (the "dataroom").</summary>
+    public required string DataroomUrl { get; init; }
+
+    /// <summary>Absolute URL of the client file-request (upload) link, if one exists.</summary>
+    public string? UploadLinkUrl { get; init; }
+}
+
+/// <summary>Builds the subject line and HTML body for each workspace email (email-safe, inline styles).</summary>
+public static class WorkspaceEmail
+{
+    private const string Evergreen = "#1F5240";
+    private const string Brass = "#8F6426";
+
+    public static (string Subject, string Html) BuildCreated(WorkspaceNotice n)
+    {
+        var kind = n.Phase == WorkspacePhase.Scoping ? "scoping" : "project";
+        var subject = $"New {kind} dataroom — {Suffix(n)}";
+        var accent = n.Phase == WorkspacePhase.Scoping ? Brass : Evergreen;
+        var kicker = n.Phase == WorkspacePhase.Scoping ? "Scoping · Gift &amp; Estate" : "Active project · Gift &amp; Estate";
+        var title = n.Phase == WorkspacePhase.Scoping ? "A scoping dataroom is ready" : "A project dataroom is ready";
+        var intro = "A workspace has been created for the engagement below. You're receiving this because you have access to it.";
+        return (subject, Render(n, accent, kicker, title, intro));
+    }
+
+    public static (string Subject, string Html) BuildAccessAdded(WorkspaceNotice n)
+    {
+        var subject = $"You've been added — {Suffix(n)}";
+        const string kicker = "Access granted · Gift &amp; Estate";
+        const string title = "You now have access to a dataroom";
+        const string intro = "You've been given access to the workspace below, so you can start work. You're receiving this because your access was just added.";
+        return (subject, Render(n, Evergreen, kicker, title, intro));
+    }
+
+    private static string Suffix(WorkspaceNotice n) =>
+        string.IsNullOrWhiteSpace(n.IdValue) ? n.CustomerName : $"{n.CustomerName} ({n.IdValue})";
+
+    private static string Render(WorkspaceNotice n, string accent, string kicker, string title, string intro)
+    {
+        var rows = new StringBuilder();
+        Row(rows, "Client", n.CustomerName);
+        Row(rows, n.Phase == WorkspacePhase.Scoping ? "Engagement" : "Project", n.EngagementName);
+        Row(rows, n.IdLabel, n.IdValue);
+        Row(rows, "Project manager", n.ProjectManager);
+        Row(rows, "Practice", n.Practice);
+
+        var uploadButton = string.IsNullOrWhiteSpace(n.UploadLinkUrl)
+            ? string.Empty
+            : $"<a href=\"{Attr(n.UploadLinkUrl)}\" style=\"display:inline-block;text-decoration:none;font-family:Arial,sans-serif;font-size:14px;font-weight:700;padding:12px 22px;border-radius:7px;margin:0 8px 10px 0;background:#ffffff;color:{accent};border:1.5px solid {accent};\">Client file-request link</a>";
+
+        var uploadNote = string.IsNullOrWhiteSpace(n.UploadLinkUrl)
+            ? string.Empty
+            : "<p style=\"font-size:13px;color:#5b655c;background:#f2f5ef;border-left:3px solid #cbd3c6;padding:10px 14px;border-radius:0 6px 6px 0;margin:4px 0 0;\">Send the <strong>client file-request link</strong> to the client to collect their documents. They can upload without signing in, and they can't see anything already in the folder.</p>";
+
+        return $@"<div style=""background:#eef1ec;padding:24px 0;font-family:Arial,Helvetica,sans-serif;"">
+<table role=""presentation"" width=""100%"" cellpadding=""0"" cellspacing=""0""><tr><td align=""center"">
+<table role=""presentation"" width=""600"" cellpadding=""0"" cellspacing=""0"" style=""max-width:600px;background:#ffffff;border-radius:10px;overflow:hidden;"">
+  <tr><td style=""padding:20px 28px;background:{accent};color:#ffffff;"">
+    <div style=""font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;opacity:.85;margin:0 0 4px;"">{kicker}</div>
+    <div style=""font-family:Georgia,'Times New Roman',serif;font-size:21px;line-height:1.2;"">{title}</div>
+  </td></tr>
+  <tr><td style=""padding:24px 28px 28px;color:#1f2a24;font-size:15px;line-height:1.62;"">
+    <p style=""margin:0 0 16px;color:#354039;"">{intro}</p>
+    <table role=""presentation"" width=""100%"" cellpadding=""0"" cellspacing=""0"" style=""border-collapse:collapse;margin:4px 0 22px;background:#f6f8f5;border:1px solid #e2e7de;border-radius:8px;overflow:hidden;"">
+      {rows}
+    </table>
+    <div style=""margin:6px 0 4px;"">
+      <a href=""{Attr(n.DataroomUrl)}"" style=""display:inline-block;text-decoration:none;font-family:Arial,sans-serif;font-size:14px;font-weight:700;padding:12px 22px;border-radius:7px;margin:0 8px 10px 0;background:{accent};color:#ffffff;"">Open the dataroom</a>
+      {uploadButton}
+    </div>
+    {uploadNote}
+  </td></tr>
+  <tr><td style=""padding:16px 28px 22px;border-top:1px solid #ecefe8;font-size:11.5px;line-height:1.5;color:#8a938a;"">
+    Automated message from the Marshall &amp; Stevens project workspace sync. You're receiving it because you have access to this dataroom. Please don't reply to this address.
+  </td></tr>
+</table>
+</td></tr></table>
+</div>";
+    }
+
+    private static void Row(StringBuilder sb, string? label, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(label) || string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        sb.Append(
+            "<tr><td style=\"padding:9px 14px;font-size:11px;letter-spacing:.05em;text-transform:uppercase;font-weight:700;color:#6a746a;width:40%;border-bottom:1px solid #e8ede4;\">")
+          .Append(Html(label))
+          .Append("</td><td style=\"padding:9px 14px;font-size:14px;font-weight:600;color:#1f2a24;border-bottom:1px solid #e8ede4;\">")
+          .Append(Html(value))
+          .Append("</td></tr>");
+    }
+
+    private static string Html(string s) => WebUtility.HtmlEncode(s);
+
+    private static string Attr(string s) => WebUtility.HtmlEncode(s);
+}

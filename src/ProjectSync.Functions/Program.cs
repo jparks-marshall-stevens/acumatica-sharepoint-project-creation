@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using ProjectSync;
 using ProjectSync.Acumatica;
+using ProjectSync.Notifications;
 using ProjectSync.HubSpot;
 using ProjectSync.Options;
 using ProjectSync.SharePoint;
@@ -28,6 +29,7 @@ var host = new HostBuilder()
         services.Configure<SharePointOptions>(configuration.GetSection(SharePointOptions.SectionName));
         services.Configure<StateOptions>(configuration.GetSection(StateOptions.SectionName));
         services.Configure<HubSpotOptions>(configuration.GetSection(HubSpotOptions.SectionName));
+        services.Configure<NotificationOptions>(configuration.GetSection(NotificationOptions.SectionName));
 
         // Acumatica: token provider + GI client (typed HttpClients).
         services.AddHttpClient<AcumaticaTokenProvider>();
@@ -55,6 +57,10 @@ var host = new HostBuilder()
             return new BlobServiceClient(connection);
         });
         services.AddSingleton<ILastRunStore, BlobLastRunStore>();
+
+        // Notifications (stubbed sender for now — swap the registration for a Graph sender to go live).
+        services.AddSingleton<IEmailSender, LoggingEmailSender>();
+        services.AddSingleton<WorkspaceNotifier>();
 
         // SharePoint.
         services.AddSingleton<SharePointContextFactory>();

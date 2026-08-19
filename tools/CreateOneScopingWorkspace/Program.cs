@@ -7,6 +7,7 @@ using Microsoft.SharePoint.Client;
 using ProjectSync.HubSpot;
 using ProjectSync.Options;
 using ProjectSync.SharePoint;
+using ProjectSync.Notifications;
 
 // -----------------------------------------------------------------------------
 // Create ONE scoping workspace — a controlled live write for a single HubSpot deal.
@@ -47,7 +48,11 @@ var tokenProvider = new HubSpotTokenProvider(http, hubOptions, loggerFactory.Cre
 var hubspot = new HubSpotClient(http, tokenProvider, hubOptions, loggerFactory.CreateLogger<HubSpotClient>());
 var contextFactory = new SharePointContextFactory(spOptions, loggerFactory.CreateLogger<SharePointContextFactory>());
 var uploadLinks = new GraphUploadLinkService(contextFactory, spOptions, loggerFactory.CreateLogger<GraphUploadLinkService>());
-var sharePoint = new SharePointDocumentSetService(contextFactory, uploadLinks, spOptions, loggerFactory.CreateLogger<SharePointDocumentSetService>());
+var notifier = new WorkspaceNotifier(
+    new LoggingEmailSender(loggerFactory.CreateLogger<LoggingEmailSender>()),
+    Bind<NotificationOptions>(configuration, NotificationOptions.SectionName),
+    loggerFactory.CreateLogger<WorkspaceNotifier>());
+var sharePoint = new SharePointDocumentSetService(contextFactory, uploadLinks, notifier, spOptions, loggerFactory.CreateLogger<SharePointDocumentSetService>());
 
 Console.WriteLine($"=== Create ONE scoping workspace: deal {dealId} ===");
 Console.WriteLine();
