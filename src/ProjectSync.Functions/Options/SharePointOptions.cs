@@ -38,7 +38,7 @@ public sealed class SharePointOptions
     /// Number of leading characters of the customer name used in the document-set folder name,
     /// which is "{customer[..N]} | {project id}".
     /// </summary>
-    public int DocumentSetNameMaxLength { get; set; } = 40;
+    public int DocumentSetNameMaxLength { get; set; } = 20;
 
     /// <summary>When true, set explicit permissions on each document set (project manager + practice leader).</summary>
     public bool SetProjectPermissions { get; set; } = true;
