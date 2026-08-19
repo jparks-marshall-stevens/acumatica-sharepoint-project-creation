@@ -65,7 +65,7 @@ public static class WorkspaceEmail
     {
         var logo = string.IsNullOrWhiteSpace(logoUrl)
             ? string.Empty
-            : $"<img src=\"{Attr(logoUrl!)}\" alt=\"Marshall &amp; Stevens\" width=\"150\" style=\"display:block;height:26px;width:auto;margin:0 0 12px;border:0;\" />";
+            : $"<img src=\"{Attr(logoUrl!)}\" alt=\"Marshall &amp; Stevens\" width=\"150\" style=\"display:block;height:28px;width:auto;margin:0 0 14px;border:0;\" />";
 
         var rows = new StringBuilder();
         Row(rows, "Client", n.CustomerName);
@@ -85,9 +85,9 @@ public static class WorkspaceEmail
         return $@"<div style=""background:#eef1ec;padding:24px 0;font-family:Arial,Helvetica,sans-serif;"">
 <table role=""presentation"" width=""100%"" cellpadding=""0"" cellspacing=""0""><tr><td align=""center"">
 <table role=""presentation"" width=""600"" cellpadding=""0"" cellspacing=""0"" style=""max-width:600px;background:#ffffff;border-radius:10px;overflow:hidden;"">
-  <tr><td style=""padding:20px 28px;background:{accent};color:#ffffff;"">
-    {logo}<div style=""font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;opacity:.85;margin:0 0 4px;"">{kicker}</div>
-    <div style=""font-family:Georgia,'Times New Roman',serif;font-size:21px;line-height:1.2;"">{title}</div>
+  <tr><td style=""padding:22px 28px 18px;background:#ffffff;border-bottom:3px solid {accent};"">
+    {logo}<div style=""font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:{accent};margin:0 0 4px;"">{kicker}</div>
+    <div style=""font-family:Georgia,'Times New Roman',serif;font-size:21px;line-height:1.2;color:#1f2a24;"">{title}</div>
   </td></tr>
   <tr><td style=""padding:24px 28px 28px;color:#1f2a24;font-size:15px;line-height:1.62;"">
     <p style=""margin:0 0 16px;color:#354039;"">{intro}</p>
