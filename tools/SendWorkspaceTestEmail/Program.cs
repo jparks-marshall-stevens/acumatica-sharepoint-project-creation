@@ -142,6 +142,39 @@ Console.WriteLine();
 var sender = new GraphEmailSender(contextFactory, spOptions, notifyOptions, loggerFactory.CreateLogger<GraphEmailSender>());
 var notifier = new WorkspaceNotifier(sender, notifyOptions, loggerFactory.CreateLogger<WorkspaceNotifier>());
 
+// --upload: send the CLIENT-UPLOAD email with the real uploads-folder URL (and the folder's real files).
+if (args.Any(a => a.Equals("--upload", StringComparison.OrdinalIgnoreCase)))
+{
+    var uploadsRel = fileRef + "/" + sp.ClientUploadsFolderName;
+    var uploadsFolderUrl = origin + uploadsRel.Replace(" ", "%20");
+
+    var names = new List<string>();
+    try
+    {
+        var uf = ctx.Web.GetFolderByServerRelativeUrl(uploadsRel);
+        ctx.Load(uf.Files, fs => fs.Include(f => f.Name));
+        await ctx.ExecuteQueryRetryAsync();
+        names = uf.Files.Select(f => f.Name).ToList();
+    }
+    catch { /* folder may not exist yet */ }
+
+    if (names.Count == 0)
+    {
+        names = new List<string> { "Trust Agreement.pdf", "2024 Financial Statements.xlsx" };
+        Console.WriteLine("(Client Uploads folder is empty — using sample filenames; the button URL is still real.)");
+    }
+
+    var uploadRecipients = new List<string?> { "someone.live@example.com", mapping.PracticeLeaderEmail };
+    uploadRecipients.AddRange(mapping.AdminEmails);
+    var exclude = isScoping ? null : mapping.PracticeLeaderEmail; // keep Bruce for scoping, drop for engagement
+
+    Console.WriteLine($"Uploads folder URL: {uploadsFolderUrl}");
+    Console.WriteLine($"Files: {string.Join(", ", names)}");
+    await notifier.NotifyClientUploadAsync(notice, names, uploadsFolderUrl, uploadRecipients, exclude, CancellationToken.None);
+    Console.WriteLine($"✔ Sent client-upload test to {n.TestRecipient}. Click 'Open the client uploads' to verify it resolves.");
+    return 0;
+}
+
 // Recipients mirror production: a sample owner/PM (stand-in for the real one) PLUS the practice admins
 // from config (e.g. Michelle). TestMode still routes everything to TestRecipient only; the intended list
 // in the subject shows who would really receive it.
