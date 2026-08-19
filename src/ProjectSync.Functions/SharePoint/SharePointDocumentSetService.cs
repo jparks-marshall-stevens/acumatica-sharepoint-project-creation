@@ -46,6 +46,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         await EnsureTextColumnAsync(ctx, list, _options.StatusColumn);
         await EnsureTextColumnAsync(ctx, list, _options.HubSpotDealIdColumn);
         await EnsureTextColumnAsync(ctx, list, _options.OpportunityIdColumn);
+        await EnsureTextColumnAsync(ctx, list, _options.DataroomUrlColumn);
 
         // Idempotency is keyed on the Project Id metadata column (unique), NOT the folder name —
         // folder names come from the description and are not guaranteed unique.
@@ -55,7 +56,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
             _logger.LogInformation("Document set for project {ProjectId} already exists at {Url}; updating metadata + permissions.",
                 project.ProjectId, existing);
             var sig = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail, destination.AdminEmails);
-            await ApplyMetadataAsync(ctx, existing, project, sig, cancellationToken);
+            await ApplyMetadataAsync(ctx, existing, project, sig, siteUrl, cancellationToken);
             var addedExisting = await ApplyPermissionsAsync(ctx, existing, project, destination, cancellationToken);
             await NotifyProjectAccessAddedAsync(ctx, project, destination, existing, siteUrl, addedExisting, cancellationToken);
             return new DocumentSetResult(Created: false, existing);
@@ -118,7 +119,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
 
         var serverRelativeUrl = created.Value;
         var newSig = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail, destination.AdminEmails);
-        await ApplyMetadataAsync(ctx, serverRelativeUrl, project, newSig, cancellationToken);
+        await ApplyMetadataAsync(ctx, serverRelativeUrl, project, newSig, siteUrl, cancellationToken);
         await ApplyPermissionsAsync(ctx, serverRelativeUrl, project, destination, cancellationToken);
 
         // Client uploads folder + external "Request files" link. Create-once: only on first creation,
@@ -491,6 +492,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         CancellationToken cancellationToken)
     {
         int considered = 0, updated = 0, unchanged = 0, notTracked = 0;
+        var resyncs = new List<UrlResync>();
 
         // One SharePoint context per (site, library) — currently a single group (Estate & Gift).
         var groups = desiredProjects
@@ -508,6 +510,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
 
             await EnsureSignatureColumnAsync(ctx, list);
             await EnsureTextColumnAsync(ctx, list, _options.StatusColumn);
+            await EnsureTextColumnAsync(ctx, list, _options.DataroomUrlColumn);
             var tracked = await GetTrackedDocSetsAsync(ctx, list, cancellationToken);
 
             foreach (var x in group)
@@ -525,22 +528,70 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
                 }
 
                 considered++;
+
+                // Detect a manual folder rename: the folder's current URL no longer matches the one stamped
+                // in the metadata column. (A rename touches nothing in Acumatica, so signature-gating alone
+                // would never catch it.) An empty column means the workspace predates this feature — seed it
+                // silently so we don't fire a write-back storm on the first sweep.
+                var currentUrl = BuildAbsoluteUrl(group.Key.Site, t.Url);
+                var urlMissing = string.IsNullOrWhiteSpace(t.DataroomUrl);
+                var urlDrifted = !urlMissing && !string.Equals(t.DataroomUrl, currentUrl, StringComparison.OrdinalIgnoreCase);
+
                 var desiredSig = ReconcileSignature.Compute(x.Project, x.Dest.PracticeLeaderEmail, x.Dest.AdminEmails);
-                if (string.Equals(desiredSig, t.Signature, StringComparison.OrdinalIgnoreCase))
+                var sigChanged = !string.Equals(desiredSig, t.Signature, StringComparison.OrdinalIgnoreCase);
+
+                if (sigChanged)
+                {
+                    _logger.LogInformation("Reconcile: project {ProjectId} changed — re-applying metadata + permissions.", x.Project.ProjectId);
+                    // ApplyMetadataAsync also (re)stamps the dataroom URL column to the current URL.
+                    await ApplyMetadataAsync(ctx, t.Url, x.Project, desiredSig, group.Key.Site, cancellationToken);
+                    var reconcileAdded = await ApplyPermissionsAsync(ctx, t.Url, x.Project, x.Dest, cancellationToken);
+                    await NotifyProjectAccessAddedAsync(ctx, x.Project, x.Dest, t.Url, group.Key.Site, reconcileAdded, cancellationToken);
+                    updated++;
+                }
+                else if (urlDrifted)
+                {
+                    _logger.LogInformation("Reconcile: project {ProjectId} folder was renamed — refreshing dataroom URL in SharePoint + Acumatica.", x.Project.ProjectId);
+                    await StampDataroomUrlAsync(ctx, t.Url, currentUrl, cancellationToken);
+                    updated++;
+                }
+                else if (urlMissing)
+                {
+                    await StampDataroomUrlAsync(ctx, t.Url, currentUrl, cancellationToken); // seed baseline, no write-back
+                    unchanged++;
+                }
+                else
                 {
                     unchanged++;
-                    continue;
                 }
 
-                _logger.LogInformation("Reconcile: project {ProjectId} changed — re-applying metadata + permissions.", x.Project.ProjectId);
-                await ApplyMetadataAsync(ctx, t.Url, x.Project, desiredSig, cancellationToken);
-                var reconcileAdded = await ApplyPermissionsAsync(ctx, t.Url, x.Project, x.Dest, cancellationToken);
-                await NotifyProjectAccessAddedAsync(ctx, x.Project, x.Dest, t.Url, group.Key.Site, reconcileAdded, cancellationToken);
-                updated++;
+                // Re-write Acumatica's DATAURL only for a genuine rename (a prior value existed and changed).
+                if (urlDrifted)
+                {
+                    resyncs.Add(new UrlResync(x.Project.ProjectId, currentUrl));
+                }
             }
         }
 
-        return new ReconcileResult { Considered = considered, Updated = updated, Unchanged = unchanged, NotTracked = notTracked };
+        return new ReconcileResult
+        {
+            Considered = considered,
+            Updated = updated,
+            Unchanged = unchanged,
+            NotTracked = notTracked,
+            UrlResyncs = resyncs,
+        };
+    }
+
+    /// <summary>Refreshes only the dataroom-URL metadata column on a document set (used when a folder was renamed).</summary>
+    private async Task StampDataroomUrlAsync(ClientContext ctx, string serverRelativeUrl, string dataroomUrl, CancellationToken cancellationToken)
+    {
+        var item = ctx.Web.GetFolderByServerRelativeUrl(ToServerRelative(serverRelativeUrl)).ListItemAllFields;
+        ctx.Load(item);
+        await ctx.ExecuteQueryRetryAsync();
+        SetIfPresent(item, _options.DataroomUrlColumn, dataroomUrl);
+        item.Update();
+        await ctx.ExecuteQueryRetryAsync();
     }
 
     /// <summary>Ensures the hidden signature column exists on the library (idempotent).</summary>
@@ -566,13 +617,14 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         _logger.LogInformation("Created reconcile signature column '{Column}'.", col);
     }
 
-    /// <summary>Bulk-reads all tracked document sets: project id → (folder url, stored signature).</summary>
-    private async Task<Dictionary<string, (string Url, string? Signature)>> GetTrackedDocSetsAsync(
+    /// <summary>Bulk-reads all tracked document sets: project id → (folder url, stored signature, stored dataroom url).</summary>
+    private async Task<Dictionary<string, (string Url, string? Signature, string? DataroomUrl)>> GetTrackedDocSetsAsync(
         ClientContext ctx, List list, CancellationToken cancellationToken)
     {
-        var result = new Dictionary<string, (string, string?)>(StringComparer.OrdinalIgnoreCase);
+        var result = new Dictionary<string, (string, string?, string?)>(StringComparer.OrdinalIgnoreCase);
         var pidCol = _options.ProjectIdColumn;
         var sigCol = _options.SignatureColumn;
+        var urlCol = _options.DataroomUrlColumn;
         ListItemCollectionPosition? position = null;
         do
         {
@@ -583,13 +635,13 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
                     "<Eq><FieldRef Name='FSObjType'/><Value Type='Integer'>1</Value></Eq>" +
                     $"<IsNotNull><FieldRef Name='{pidCol}'/></IsNotNull>" +
                     "</And></Where></Query>" +
-                    $"<ViewFields><FieldRef Name='{pidCol}'/><FieldRef Name='{sigCol}'/><FieldRef Name='FileRef'/></ViewFields>" +
+                    $"<ViewFields><FieldRef Name='{pidCol}'/><FieldRef Name='{sigCol}'/><FieldRef Name='{urlCol}'/><FieldRef Name='FileRef'/></ViewFields>" +
                     "<RowLimit Paged='TRUE'>2000</RowLimit></View>",
                 ListItemCollectionPosition = position,
             };
             var items = list.GetItems(query);
             ctx.Load(items, c => c.ListItemCollectionPosition,
-                c => c.Include(i => i["FileRef"], i => i[pidCol], i => i[sigCol]));
+                c => c.Include(i => i["FileRef"], i => i[pidCol], i => i[sigCol], i => i[urlCol]));
             await ctx.ExecuteQueryRetryAsync();
 
             foreach (var it in items)
@@ -601,7 +653,8 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
                 }
 
                 var sig = it.FieldValues.TryGetValue(sigCol, out var s) ? s?.ToString() : null;
-                result[pid!] = (it["FileRef"]?.ToString() ?? string.Empty, sig);
+                var storedUrl = it.FieldValues.TryGetValue(urlCol, out var u) ? u?.ToString() : null;
+                result[pid!] = (it["FileRef"]?.ToString() ?? string.Empty, sig, storedUrl);
             }
 
             position = items.ListItemCollectionPosition;
@@ -728,13 +781,13 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         var desiredName = SharePointNaming.BuildDocumentSetName(
             project.CustomerName, project.ProjectId, _options.DocumentSetNameMaxLength);
         var url = await TryRenameDocumentSetAsync(ctx, scopingUrl, desiredName, project.ProjectId, cancellationToken);
+        var promoteSite = string.IsNullOrWhiteSpace(destination.SiteUrl) ? _options.SiteUrl : destination.SiteUrl!;
 
         var signature = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail, destination.AdminEmails);
-        await ApplyMetadataAsync(ctx, url, project, signature, cancellationToken);
+        await ApplyMetadataAsync(ctx, url, project, signature, promoteSite, cancellationToken);
 
         // Authoritative reset: the scoping grantees (the deal owner) give way to the delivery team.
         var addedByPromotion = await ApplyPermissionsAsync(ctx, url, project, destination, cancellationToken);
-        var promoteSite = string.IsNullOrWhiteSpace(destination.SiteUrl) ? _options.SiteUrl : destination.SiteUrl!;
         await NotifyProjectAccessAddedAsync(ctx, project, destination, url, promoteSite, addedByPromotion, cancellationToken);
 
         // Deliberately NOT EnsureClientUploadsAsync — the scoping phase already created the folder and
@@ -790,7 +843,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
     }
 
     private async Task ApplyMetadataAsync(
-        ClientContext ctx, string serverRelativeUrl, AcumaticaProject project, string? signature, CancellationToken cancellationToken)
+        ClientContext ctx, string serverRelativeUrl, AcumaticaProject project, string? signature, string siteUrl, CancellationToken cancellationToken)
     {
         var folder = ctx.Web.GetFolderByServerRelativeUrl(ToServerRelative(serverRelativeUrl));
         var item = folder.ListItemAllFields;
@@ -832,6 +885,10 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
 
         // Stamp the reconcile signature so an unchanged project is skipped on later sweeps.
         SetIfPresent(item, _options.SignatureColumn, signature);
+
+        // Keep the dataroom URL in the metadata column current. This is the value the reconcile sweep
+        // compares against to notice a manual folder rename (and then re-write Acumatica's DATAURL).
+        SetIfPresent(item, _options.DataroomUrlColumn, BuildAbsoluteUrl(siteUrl, serverRelativeUrl));
 
         item.Update();
         await ctx.ExecuteQueryRetryAsync();
