@@ -72,7 +72,6 @@ public static class WorkspaceEmail
         Row(rows, n.Phase == WorkspacePhase.Scoping ? "Engagement" : "Project", n.EngagementName);
         Row(rows, n.IdLabel, n.IdValue);
         Row(rows, "Project manager", n.ProjectManager);
-        Row(rows, "Practice", n.Practice);
 
         var uploadButton = string.IsNullOrWhiteSpace(n.UploadLinkUrl)
             ? string.Empty
