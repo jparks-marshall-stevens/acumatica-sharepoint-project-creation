@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.SharePoint.Client;
 using ProjectSync.Acumatica;
+using ProjectSync.Notifications;
 using ProjectSync.Options;
 using SPDocumentSet = Microsoft.SharePoint.Client.DocumentSet.DocumentSet;
 
@@ -11,17 +12,20 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
 {
     private readonly SharePointContextFactory _contextFactory;
     private readonly GraphUploadLinkService _uploadLinks;
+    private readonly WorkspaceNotifier _notifier;
     private readonly SharePointOptions _options;
     private readonly ILogger<SharePointDocumentSetService> _logger;
 
     public SharePointDocumentSetService(
         SharePointContextFactory contextFactory,
         GraphUploadLinkService uploadLinks,
+        WorkspaceNotifier notifier,
         IOptions<SharePointOptions> options,
         ILogger<SharePointDocumentSetService> logger)
     {
         _contextFactory = contextFactory;
         _uploadLinks = uploadLinks;
+        _notifier = notifier;
         _options = options.Value;
         _logger = logger;
     }
@@ -50,9 +54,10 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         {
             _logger.LogInformation("Document set for project {ProjectId} already exists at {Url}; updating metadata + permissions.",
                 project.ProjectId, existing);
-            var sig = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail);
+            var sig = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail, destination.AdminEmails);
             await ApplyMetadataAsync(ctx, existing, project, sig, cancellationToken);
-            await ApplyPermissionsAsync(ctx, existing, project, destination, cancellationToken);
+            var addedExisting = await ApplyPermissionsAsync(ctx, existing, project, destination, cancellationToken);
+            await NotifyProjectAccessAddedAsync(ctx, project, destination, existing, siteUrl, addedExisting, cancellationToken);
             return new DocumentSetResult(Created: false, existing);
         }
 
@@ -112,16 +117,23 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         await ctx.ExecuteQueryRetryAsync();
 
         var serverRelativeUrl = created.Value;
-        var newSig = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail);
+        var newSig = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail, destination.AdminEmails);
         await ApplyMetadataAsync(ctx, serverRelativeUrl, project, newSig, cancellationToken);
         await ApplyPermissionsAsync(ctx, serverRelativeUrl, project, destination, cancellationToken);
 
         // Client uploads folder + external "Request files" link. Create-once: only on first creation,
         // after permissions (so the child-scoped sharing link isn't cleared by the inheritance break).
+        string? uploadLink = null;
         if (_options.CreateClientUploadLink)
         {
-            await EnsureClientUploadsAsync(ctx, list, serverRelativeUrl, siteUrl, cancellationToken);
+            uploadLink = await EnsureClientUploadsAsync(ctx, list, serverRelativeUrl, siteUrl, cancellationToken);
         }
+
+        await _notifier.NotifyCreatedAsync(
+            ProjectNotice(project, siteUrl, serverRelativeUrl, uploadLink),
+            ProjectRecipients(project, destination),
+            destination.PracticeLeaderEmail,
+            cancellationToken);
 
         return new DocumentSetResult(Created: true, serverRelativeUrl);
     }
@@ -167,7 +179,13 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
             var url = await TryRenameDocumentSetAsync(ctx, existing.Url, desired, discriminator, cancellationToken);
 
             await ApplyScopingMetadataAsync(ctx, url, workspace, cancellationToken);
-            await ApplyScopingPermissionsAsync(ctx, url, workspace, destination, cancellationToken);
+            var addedScoping = await ApplyScopingPermissionsAsync(ctx, url, workspace, destination, cancellationToken);
+            if (addedScoping.Count > 0)
+            {
+                await _notifier.NotifyAccessAddedAsync(
+                    ScopingNotice(workspace, siteUrl, url, await ReadUploadLinkAsync(ctx, url)),
+                    addedScoping, destination.PracticeLeaderEmail, cancellationToken);
+            }
             return new DocumentSetResult(Created: false, url);
         }
 
@@ -196,10 +214,17 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
 
         await ApplyScopingMetadataAsync(ctx, serverRelativeUrl, workspace, cancellationToken);
         await ApplyScopingPermissionsAsync(ctx, serverRelativeUrl, workspace, destination, cancellationToken);
+        string? scopingUploadLink = null;
         if (_options.CreateClientUploadLink)
         {
-            await EnsureClientUploadsAsync(ctx, list, serverRelativeUrl, siteUrl, cancellationToken);
+            scopingUploadLink = await EnsureClientUploadsAsync(ctx, list, serverRelativeUrl, siteUrl, cancellationToken);
         }
+
+        await _notifier.NotifyCreatedAsync(
+            ScopingNotice(workspace, siteUrl, serverRelativeUrl, scopingUploadLink),
+            ScopingRecipients(workspace, destination),
+            destination.PracticeLeaderEmail,
+            cancellationToken);
 
         return new DocumentSetResult(Created: true, serverRelativeUrl);
     }
@@ -215,6 +240,237 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         var discriminator = string.IsNullOrWhiteSpace(workspace.OpportunityId) ? workspace.DealId : workspace.OpportunityId!;
         var basis = workspace.CustomerName ?? workspace.ProjectName ?? discriminator;
         return (SharePointNaming.BuildDocumentSetName(basis, discriminator, _options.DocumentSetNameMaxLength), discriminator);
+    }
+
+    // ----- Notification helpers -----
+
+    private static IEnumerable<string?> ProjectRecipients(AcumaticaProject project, PracticeMappingEntry destination)
+    {
+        yield return project.ProjectManagerEmail;
+        foreach (var e in project.TeamEmails) yield return e;
+        foreach (var e in destination.AdminEmails) yield return e;
+    }
+
+    private static IEnumerable<string?> ScopingRecipients(ScopingWorkspace ws, PracticeMappingEntry destination)
+    {
+        yield return ws.OwnerEmail;
+        foreach (var e in destination.AdminEmails) yield return e;
+    }
+
+    private WorkspaceNotice ProjectNotice(AcumaticaProject p, string siteUrl, string serverRelativeUrl, string? uploadLink) => new()
+    {
+        Phase = WorkspacePhase.Execution,
+        CustomerName = string.IsNullOrWhiteSpace(p.CustomerName) ? p.ProjectId : p.CustomerName!,
+        EngagementName = p.ProjectName,
+        IdLabel = "Project ID",
+        IdValue = p.ProjectId,
+        ProjectManager = p.ProjectManager,
+        Practice = p.Practice,
+        DataroomUrl = BuildAbsoluteUrl(siteUrl, serverRelativeUrl),
+        UploadLinkUrl = uploadLink,
+    };
+
+    private WorkspaceNotice ScopingNotice(ScopingWorkspace w, string siteUrl, string serverRelativeUrl, string? uploadLink) => new()
+    {
+        Phase = WorkspacePhase.Scoping,
+        CustomerName = w.CustomerName ?? w.OpportunityId ?? w.DealId,
+        EngagementName = w.ProjectName,
+        IdLabel = "Opportunity #",
+        IdValue = w.OpportunityId ?? w.DealId,
+        Practice = w.Practice,
+        DataroomUrl = BuildAbsoluteUrl(siteUrl, serverRelativeUrl),
+        UploadLinkUrl = uploadLink,
+    };
+
+    /// <summary>Reads the stored client upload link off a document set (for access-added emails).</summary>
+    private async Task<string?> ReadUploadLinkAsync(ClientContext ctx, string serverRelativeUrl)
+    {
+        var col = _options.ClientUploadLinkColumn;
+        if (string.IsNullOrWhiteSpace(col))
+        {
+            return null;
+        }
+
+        try
+        {
+            var item = ctx.Web.GetFolderByServerRelativeUrl(ToServerRelative(serverRelativeUrl)).ListItemAllFields;
+            ctx.Load(item);
+            await ctx.ExecuteQueryRetryAsync();
+            return item.FieldValues.TryGetValue(col, out var v) ? v?.ToString() : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task NotifyProjectAccessAddedAsync(
+        ClientContext ctx, AcumaticaProject project, PracticeMappingEntry destination,
+        string serverRelativeUrl, string siteUrl, IReadOnlyList<string> newlyAdded, CancellationToken cancellationToken)
+    {
+        if (newlyAdded.Count == 0)
+        {
+            return;
+        }
+
+        var uploadLink = await ReadUploadLinkAsync(ctx, serverRelativeUrl);
+        await _notifier.NotifyAccessAddedAsync(
+            ProjectNotice(project, siteUrl, serverRelativeUrl, uploadLink),
+            newlyAdded, destination.PracticeLeaderEmail, cancellationToken);
+    }
+
+    private static string BuildAbsoluteUrl(string siteUrl, string serverRelativeUrl)
+    {
+        var origin = new Uri(siteUrl).GetLeftPart(UriPartial.Authority);
+        return origin + serverRelativeUrl.Replace(" ", "%20");
+    }
+
+    /// <summary>
+    /// Finds files added to any "Client Uploads" folder since <paramref name="since"/> and emails everyone
+    /// with access to that workspace (the practice leader is kept for scoping rooms, dropped for engagements).
+    /// The email states how many files and lists their names. Fail-soft per workspace.
+    /// </summary>
+    public async Task<ClientUploadScanResult> ScanAndNotifyClientUploadsAsync(
+        DateTimeOffset since, CancellationToken cancellationToken)
+    {
+        var result = new ClientUploadScanResult();
+        var marker = "/" + _options.ClientUploadsFolderName.Trim('/') + "/";
+
+        foreach (var mapping in _options.PracticeMappings)
+        {
+            var siteUrl = string.IsNullOrWhiteSpace(mapping.SiteUrl) ? _options.SiteUrl : mapping.SiteUrl!;
+            using var ctx = await _contextFactory.CreateContextAsync(siteUrl);
+            var list = ctx.Web.Lists.GetByTitle(mapping.Library);
+            ctx.Load(list, l => l.RootFolder.ServerRelativeUrl);
+            await ctx.ExecuteQueryRetryAsync();
+
+            // All files created since the watermark, library-wide, then keep only those under a Client
+            // Uploads folder — grouped back to their owning document set.
+            var newByDocSet = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            var sinceUtc = since.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ");
+            ListItemCollectionPosition? position = null;
+            do
+            {
+                var query = new CamlQuery
+                {
+                    ViewXml =
+                        "<View Scope='RecursiveAll'><Query><Where><And>" +
+                        "<Eq><FieldRef Name='FSObjType'/><Value Type='Integer'>0</Value></Eq>" +
+                        $"<Gt><FieldRef Name='Created'/><Value Type='DateTime' IncludeTimeValue='TRUE'>{sinceUtc}</Value></Gt>" +
+                        "</And></Where></Query>" +
+                        "<ViewFields><FieldRef Name='FileRef'/><FieldRef Name='FileLeafRef'/></ViewFields>" +
+                        "<RowLimit Paged='TRUE'>1000</RowLimit></View>",
+                    ListItemCollectionPosition = position,
+                };
+                var items = list.GetItems(query);
+                ctx.Load(items, c => c.ListItemCollectionPosition, c => c.Include(i => i["FileRef"], i => i["FileLeafRef"]));
+                await ctx.ExecuteQueryRetryAsync();
+
+                foreach (var it in items)
+                {
+                    var fileRef = it["FileRef"]?.ToString();
+                    var leaf = it["FileLeafRef"]?.ToString();
+                    if (string.IsNullOrWhiteSpace(fileRef) || string.IsNullOrWhiteSpace(leaf))
+                    {
+                        continue;
+                    }
+
+                    var idx = fileRef.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+                    if (idx < 0)
+                    {
+                        continue; // not under a Client Uploads folder
+                    }
+
+                    var docSetUrl = fileRef[..idx];
+                    if (!newByDocSet.TryGetValue(docSetUrl, out var names))
+                    {
+                        names = new List<string>();
+                        newByDocSet[docSetUrl] = names;
+                    }
+
+                    names.Add(leaf!);
+                }
+
+                position = items.ListItemCollectionPosition;
+            }
+            while (position is not null);
+
+            foreach (var (docSetUrl, fileNames) in newByDocSet)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                result.NewFiles += fileNames.Count;
+                result.WorkspacesWithNewFiles++;
+
+                try
+                {
+                    var item = ctx.Web.GetFolderByServerRelativeUrl(ToServerRelative(docSetUrl)).ListItemAllFields;
+                    ctx.Load(item,
+                        i => i[_options.CustomerNameColumn], i => i[_options.ProjectNameColumn],
+                        i => i[_options.ProjectIdColumn], i => i[_options.OpportunityIdColumn],
+                        i => i[_options.StatusColumn], i => i[_options.ClientUploadLinkColumn]);
+                    ctx.Load(item.RoleAssignments, r => r.Include(a => a.Member.PrincipalType, a => a.Member.LoginName));
+                    await ctx.ExecuteQueryRetryAsync();
+
+                    string? Field(string col) => item.FieldValues.TryGetValue(col, out var v) ? v?.ToString() : null;
+                    var status = Field(_options.StatusColumn);
+                    var isScoping = string.Equals(status, _options.ScopingStatusValue, StringComparison.OrdinalIgnoreCase);
+
+                    var recipients = GranteeEmails(item.RoleAssignments);
+                    // Keep the practice leader for scoping rooms; drop for engagements (not delivering work).
+                    var exclude = isScoping ? null : mapping.PracticeLeaderEmail;
+
+                    var notice = new WorkspaceNotice
+                    {
+                        Phase = isScoping ? WorkspacePhase.Scoping : WorkspacePhase.Execution,
+                        CustomerName = Field(_options.CustomerNameColumn) ?? "(unknown)",
+                        EngagementName = Field(_options.ProjectNameColumn),
+                        IdLabel = isScoping ? "Opportunity #" : "Project ID",
+                        IdValue = isScoping ? Field(_options.OpportunityIdColumn) : Field(_options.ProjectIdColumn),
+                        Practice = mapping.Practice,
+                        DataroomUrl = BuildAbsoluteUrl(siteUrl, docSetUrl),
+                        UploadLinkUrl = Field(_options.ClientUploadLinkColumn),
+                    };
+                    var uploadsFolderUrl = BuildAbsoluteUrl(siteUrl, docSetUrl + "/" + _options.ClientUploadsFolderName);
+
+                    await _notifier.NotifyClientUploadAsync(
+                        notice, fileNames, uploadsFolderUrl, recipients, exclude, cancellationToken);
+                    result.Notified++;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to notify client uploads for {Url}; continuing.", docSetUrl);
+                }
+            }
+        }
+
+        _logger.LogInformation(
+            "Client-upload scan since {Since:o}: {Files} new file(s) across {Workspaces} workspace(s); {Notified} notified.",
+            since, result.NewFiles, result.WorkspacesWithNewFiles, result.Notified);
+        return result;
+    }
+
+    /// <summary>Resolves a document set's role assignments to the email addresses of its individual members.</summary>
+    private static IReadOnlyList<string> GranteeEmails(RoleAssignmentCollection roleAssignments)
+    {
+        var emails = new List<string>();
+        foreach (var ra in roleAssignments)
+        {
+            // Only individual users — skip the Owners group and the app principal.
+            if (ra.Member.PrincipalType != Microsoft.SharePoint.Client.Utilities.PrincipalType.User)
+            {
+                continue;
+            }
+
+            // Claims login looks like "i:0#.f|membership|user@domain"; the UPN/email is the trailing segment.
+            var login = ra.Member.LoginName ?? string.Empty;
+            var candidate = login.Split('|').LastOrDefault();
+            if (!string.IsNullOrWhiteSpace(candidate) && candidate.Contains('@'))
+            {
+                emails.Add(candidate.Trim());
+            }
+        }
+
+        return emails.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     public DocumentSetPlan PlanDocumentSet(AcumaticaProject project)
@@ -268,7 +524,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
                 }
 
                 considered++;
-                var desiredSig = ReconcileSignature.Compute(x.Project, x.Dest.PracticeLeaderEmail);
+                var desiredSig = ReconcileSignature.Compute(x.Project, x.Dest.PracticeLeaderEmail, x.Dest.AdminEmails);
                 if (string.Equals(desiredSig, t.Signature, StringComparison.OrdinalIgnoreCase))
                 {
                     unchanged++;
@@ -277,7 +533,8 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
 
                 _logger.LogInformation("Reconcile: project {ProjectId} changed — re-applying metadata + permissions.", x.Project.ProjectId);
                 await ApplyMetadataAsync(ctx, t.Url, x.Project, desiredSig, cancellationToken);
-                await ApplyPermissionsAsync(ctx, t.Url, x.Project, x.Dest, cancellationToken);
+                var reconcileAdded = await ApplyPermissionsAsync(ctx, t.Url, x.Project, x.Dest, cancellationToken);
+                await NotifyProjectAccessAddedAsync(ctx, x.Project, x.Dest, t.Url, group.Key.Site, reconcileAdded, cancellationToken);
                 updated++;
             }
         }
@@ -471,11 +728,13 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
             project.CustomerName, project.ProjectId, _options.DocumentSetNameMaxLength);
         var url = await TryRenameDocumentSetAsync(ctx, scopingUrl, desiredName, project.ProjectId, cancellationToken);
 
-        var signature = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail);
+        var signature = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail, destination.AdminEmails);
         await ApplyMetadataAsync(ctx, url, project, signature, cancellationToken);
 
         // Authoritative reset: the scoping grantees (the deal owner) give way to the delivery team.
-        await ApplyPermissionsAsync(ctx, url, project, destination, cancellationToken);
+        var addedByPromotion = await ApplyPermissionsAsync(ctx, url, project, destination, cancellationToken);
+        var promoteSite = string.IsNullOrWhiteSpace(destination.SiteUrl) ? _options.SiteUrl : destination.SiteUrl!;
+        await NotifyProjectAccessAddedAsync(ctx, project, destination, url, promoteSite, addedByPromotion, cancellationToken);
 
         // Deliberately NOT EnsureClientUploadsAsync — the scoping phase already created the folder and
         // minted the link (create-once). Re-running it would add a second folder and a duplicate link.
@@ -629,7 +888,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
     /// access. Fail-soft on individual unresolvable users; a hard permission-API failure is logged as an
     /// error (surfaces via alerting) but does not roll back the created set.
     /// </summary>
-    private Task ApplyPermissionsAsync(
+    private Task<IReadOnlyList<string>> ApplyPermissionsAsync(
         ClientContext ctx, string serverRelativeUrl, AcumaticaProject project, PracticeMappingEntry destination, CancellationToken cancellationToken)
     {
         // Everyone who should get the grant level: PM, practice leader, and the project team.
@@ -638,6 +897,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
             : project.ProjectManager;
         var identities = new List<string?> { pmIdentity, destination.PracticeLeaderEmail };
         identities.AddRange(project.TeamEmails);
+        identities.AddRange(destination.AdminEmails);
         return ApplyPermissionsCoreAsync(ctx, serverRelativeUrl, identities, $"project {project.ProjectId}", cancellationToken);
     }
 
@@ -647,12 +907,17 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
     /// Fail-soft on individual unresolvable users; a hard permission-API failure is logged (surfaces via
     /// alerting) but does not roll back the created set.
     /// </summary>
-    private async Task ApplyPermissionsCoreAsync(
+    /// <summary>
+    /// Applies the grant set and returns the identities that are NEWLY granted on this run (those not
+    /// already assigned before it) — the basis for "you've been added" notifications. Returns an empty
+    /// list when permissions are disabled or on any failure (so callers never notify on a partial state).
+    /// </summary>
+    private async Task<IReadOnlyList<string>> ApplyPermissionsCoreAsync(
         ClientContext ctx, string serverRelativeUrl, IReadOnlyList<string?> granteeIdentities, string logContext, CancellationToken cancellationToken)
     {
         if (!_options.SetProjectPermissions)
         {
-            return;
+            return Array.Empty<string>();
         }
 
         try
@@ -666,19 +931,31 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
             ctx.Load(grantRole);
             ctx.Load(fullControl);
             ctx.Load(web.AssociatedOwnerGroup);
+            // Who is assigned BEFORE this run, so we can tell which grantees are new.
+            ctx.Load(item.RoleAssignments, r => r.Include(a => a.PrincipalId));
             await ctx.ExecuteQueryRetryAsync();
 
-            // Resolve to distinct site users (fail-soft; external/unresolvable emails are skipped).
+            var priorPrincipalIds = item.RoleAssignments.Select(a => a.PrincipalId).ToHashSet();
+
+            // Resolve to distinct site users (fail-soft; external/unresolvable emails are skipped),
+            // remembering each user's originating identity so we can report the ones newly added.
             var grantees = new List<User>();
-            var seenUserIds = new HashSet<int>();
+            var identityByUserId = new Dictionary<int, string>();
             foreach (var identity in granteeIdentities)
             {
                 var user = await TryEnsureUserAsync(ctx, identity);
-                if (user is not null && seenUserIds.Add(user.Id))
+                if (user is not null && !identityByUserId.ContainsKey(user.Id))
                 {
                     grantees.Add(user);
+                    identityByUserId[user.Id] = identity!.Trim();
                 }
             }
+
+            var newlyAdded = grantees
+                .Where(u => !priorPrincipalIds.Contains(u.Id))
+                .Select(u => identityByUserId[u.Id])
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
             if (_options.RestrictPermissions)
             {
@@ -701,14 +978,16 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
 
             await ctx.ExecuteQueryRetryAsync();
             _logger.LogInformation(
-                "Set permissions on {Context}: {Count} user(s) at {Level} + Owners FullControl.",
-                logContext, grantees.Count, _options.PermissionLevel);
+                "Set permissions on {Context}: {Count} user(s) at {Level} + Owners FullControl ({New} newly added).",
+                logContext, grantees.Count, _options.PermissionLevel, newlyAdded.Count);
+            return newlyAdded;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex,
                 "Failed to set permissions on the document set for {Context}. The set exists with its current permissions; re-run to retry.",
                 logContext);
+            return Array.Empty<string>();
         }
     }
 
@@ -717,7 +996,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
     /// ("Request files") link for it via Graph, stamping the URL into <see cref="SharePointOptions.ClientUploadLinkColumn"/>.
     /// Fully fail-soft: a failure here is logged but does not fail document-set creation.
     /// </summary>
-    private async Task EnsureClientUploadsAsync(
+    private async Task<string?> EnsureClientUploadsAsync(
         ClientContext ctx, List list, string docSetServerRelativeUrl, string siteUrl, CancellationToken cancellationToken)
     {
         try
@@ -748,12 +1027,15 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
                 docItem.Update();
                 await ctx.ExecuteQueryRetryAsync();
             }
+
+            return link;
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex,
                 "Failed to create the Client Uploads folder/link for document set at {Url}; the set exists without it.",
                 docSetServerRelativeUrl);
+            return null;
         }
     }
 
@@ -788,11 +1070,12 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         await ctx.ExecuteQueryRetryAsync();
     }
 
-    private Task ApplyScopingPermissionsAsync(
+    private Task<IReadOnlyList<string>> ApplyScopingPermissionsAsync(
         ClientContext ctx, string serverRelativeUrl, ScopingWorkspace ws, PracticeMappingEntry destination, CancellationToken cancellationToken)
     {
-        // Scoping access: the deal owner + the practice leader.
+        // Scoping access: the deal owner + the practice leader + practice admins.
         var identities = new List<string?> { ws.OwnerEmail, destination.PracticeLeaderEmail };
+        identities.AddRange(destination.AdminEmails);
         return ApplyPermissionsCoreAsync(ctx, serverRelativeUrl, identities, $"deal {ws.DealId}", cancellationToken);
     }
 

@@ -6,6 +6,7 @@ using Microsoft.SharePoint.Client;
 using ProjectSync.Acumatica;
 using ProjectSync.Options;
 using ProjectSync.SharePoint;
+using ProjectSync.Notifications;
 
 // -----------------------------------------------------------------------------
 // Create ONE document set — a controlled live write for a single project id.
@@ -46,7 +47,11 @@ var tokenProvider = new AcumaticaTokenProvider(http, acumaticaOptions, loggerFac
 var acumatica = new AcumaticaClient(http, tokenProvider, acumaticaOptions, loggerFactory.CreateLogger<AcumaticaClient>());
 var contextFactory = new SharePointContextFactory(sharePointOptions, loggerFactory.CreateLogger<SharePointContextFactory>());
 var uploadLinks = new GraphUploadLinkService(contextFactory, sharePointOptions, loggerFactory.CreateLogger<GraphUploadLinkService>());
-var sharePoint = new SharePointDocumentSetService(contextFactory, uploadLinks, sharePointOptions, loggerFactory.CreateLogger<SharePointDocumentSetService>());
+var notifier = new WorkspaceNotifier(
+    new LoggingEmailSender(loggerFactory.CreateLogger<LoggingEmailSender>()),
+    Bind<NotificationOptions>(configuration, NotificationOptions.SectionName),
+    loggerFactory.CreateLogger<WorkspaceNotifier>());
+var sharePoint = new SharePointDocumentSetService(contextFactory, uploadLinks, notifier, sharePointOptions, loggerFactory.CreateLogger<SharePointDocumentSetService>());
 
 Console.WriteLine($"=== Create ONE document set: project {projectId} ===");
 Console.WriteLine();

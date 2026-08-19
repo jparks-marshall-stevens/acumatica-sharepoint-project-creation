@@ -14,12 +14,13 @@ public static class ReconcileSignature
     // Separator that won't appear in names/emails.
     private const string Delimiter = "~|~";
 
-    /// <summary>The grantee emails (PM + practice leader + team), normalized and sorted.</summary>
-    public static IReadOnlyList<string> GranteeEmails(AcumaticaProject project, string? leaderEmail)
+    /// <summary>The grantee emails (PM + practice leader + practice admins + team), normalized and sorted.</summary>
+    public static IReadOnlyList<string> GranteeEmails(AcumaticaProject project, string? leaderEmail, IEnumerable<string>? adminEmails = null)
     {
         var pm = string.IsNullOrWhiteSpace(project.ProjectManagerEmail) ? project.ProjectManager : project.ProjectManagerEmail;
         var all = new List<string?> { pm, leaderEmail };
         all.AddRange(project.TeamEmails);
+        if (adminEmails is not null) all.AddRange(adminEmails);
         return all
             .Where(e => !string.IsNullOrWhiteSpace(e))
             .Select(e => e!.Trim().ToLowerInvariant())
@@ -29,7 +30,7 @@ public static class ReconcileSignature
     }
 
     /// <summary>Hash of the metadata + grantee set (hex; fits a single-line text column).</summary>
-    public static string Compute(AcumaticaProject project, string? leaderEmail)
+    public static string Compute(AcumaticaProject project, string? leaderEmail, IEnumerable<string>? adminEmails = null)
     {
         var pmEmail = (string.IsNullOrWhiteSpace(project.ProjectManagerEmail) ? project.ProjectManager : project.ProjectManagerEmail)
             ?.Trim().ToLowerInvariant() ?? string.Empty;
@@ -40,7 +41,7 @@ public static class ReconcileSignature
             project.CustomerName ?? string.Empty,
             pmEmail,
         };
-        parts.AddRange(GranteeEmails(project, leaderEmail));
+        parts.AddRange(GranteeEmails(project, leaderEmail, adminEmails));
 
         var payload = string.Join(Delimiter, parts);
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(payload));

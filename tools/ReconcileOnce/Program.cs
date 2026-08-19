@@ -6,6 +6,7 @@ using ProjectSync;
 using ProjectSync.Acumatica;
 using ProjectSync.Options;
 using ProjectSync.SharePoint;
+using ProjectSync.Notifications;
 using ProjectSync.State;
 
 // Runs one reconcile pass against the real systems. "full" (default) sweeps all tracked sets;
@@ -34,7 +35,11 @@ var tokenProvider = new AcumaticaTokenProvider(http, acumaticaOptions, loggerFac
 var acumatica = new AcumaticaClient(http, tokenProvider, acumaticaOptions, loggerFactory.CreateLogger<AcumaticaClient>());
 var contextFactory = new SharePointContextFactory(sharePointOptions, loggerFactory.CreateLogger<SharePointContextFactory>());
 var uploadLinks = new GraphUploadLinkService(contextFactory, sharePointOptions, loggerFactory.CreateLogger<GraphUploadLinkService>());
-var sharePoint = new SharePointDocumentSetService(contextFactory, uploadLinks, sharePointOptions, loggerFactory.CreateLogger<SharePointDocumentSetService>());
+var notifier = new WorkspaceNotifier(
+    new LoggingEmailSender(loggerFactory.CreateLogger<LoggingEmailSender>()),
+    Bind<NotificationOptions>(configuration, NotificationOptions.SectionName),
+    loggerFactory.CreateLogger<WorkspaceNotifier>());
+var sharePoint = new SharePointDocumentSetService(contextFactory, uploadLinks, notifier, sharePointOptions, loggerFactory.CreateLogger<SharePointDocumentSetService>());
 var processor = new ProjectSyncProcessor(
     acumatica, sharePoint, new InMemoryLastRunStore(), stateOptions, acumaticaOptions,
     TimeProvider.System, loggerFactory.CreateLogger<ProjectSyncProcessor>());
