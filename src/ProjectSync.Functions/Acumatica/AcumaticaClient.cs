@@ -246,4 +246,62 @@ public sealed class AcumaticaClient : IAcumaticaClient
             ? dto
             : null;
     }
+
+    /// <summary>
+    /// Writes the dataroom + client-upload URLs to the project's configured attributes via the
+    /// contract-based REST API (PUT /entity/Default/{version}/Project, matched by ProjectID). No-op unless
+    /// both attribute IDs are configured and at least one URL is provided.
+    /// </summary>
+    public async Task<bool> WriteProjectUrlsAsync(
+        string projectId, string? dataUrl, string? clientUrl, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(_options.DataUrlAttributeId) && string.IsNullOrWhiteSpace(_options.ClientUrlAttributeId))
+        {
+            return false; // write-back disabled
+        }
+
+        var attributes = new List<object>();
+        if (!string.IsNullOrWhiteSpace(_options.DataUrlAttributeId) && !string.IsNullOrWhiteSpace(dataUrl))
+        {
+            attributes.Add(new { AttributeID = new { value = _options.DataUrlAttributeId }, Value = new { value = dataUrl } });
+        }
+        if (!string.IsNullOrWhiteSpace(_options.ClientUrlAttributeId) && !string.IsNullOrWhiteSpace(clientUrl))
+        {
+            attributes.Add(new { AttributeID = new { value = _options.ClientUrlAttributeId }, Value = new { value = clientUrl } });
+        }
+
+        if (attributes.Count == 0)
+        {
+            return false; // nothing to write
+        }
+
+        var token = await _tokenProvider.GetAccessTokenAsync(cancellationToken);
+        var baseUrl = _options.BaseUrl.TrimEnd('/');
+        var url = $"{baseUrl}/entity/Default/{_options.ContractApiVersion}/Project";
+        var payload = JsonSerializer.Serialize(new
+        {
+            ProjectID = new { value = projectId },
+            Attributes = attributes,
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, url)
+        {
+            Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json"),
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        using var response = await _http.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            _logger.LogError("Acumatica write-back failed for project {ProjectId} ({Status}): {Body}",
+                projectId, (int)response.StatusCode, body.Length > 400 ? body[..400] : body);
+            return false;
+        }
+
+        _logger.LogInformation("Wrote workspace URLs back to Acumatica project {ProjectId} ({Count} attribute(s)).",
+            projectId, attributes.Count);
+        return true;
+    }
 }

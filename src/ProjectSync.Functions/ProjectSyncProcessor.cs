@@ -173,6 +173,21 @@ public sealed class ProjectSyncProcessor
                     {
                         updated++;
                     }
+
+                    // Once, on first creation (or promotion): write the workspace URLs back to the
+                    // Acumatica project attributes. Fail-soft — never let this break the cycle.
+                    if (result.Created || result.Promoted)
+                    {
+                        try
+                        {
+                            await _acumatica.WriteProjectUrlsAsync(
+                                project.ProjectId, result.DataroomUrl, result.ClientUploadUrl, cancellationToken);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "URL write-back to Acumatica failed for project {ProjectId}; continuing.", project.ProjectId);
+                        }
+                    }
                 }
 
                 // Advance the watermark only for successfully processed records, oldest-first, so a

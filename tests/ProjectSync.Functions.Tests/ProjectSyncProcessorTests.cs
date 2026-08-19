@@ -26,6 +26,8 @@ public class ProjectSyncProcessorTests
         // Default: no team members unless a test overrides.
         _acumatica.Setup(a => a.GetTeamEmailsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Array.Empty<string>());
+        _acumatica.Setup(a => a.WriteProjectUrlsAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
         return new(
             _acumatica.Object,
         _sharePoint.Object,
