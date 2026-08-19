@@ -22,6 +22,12 @@ public interface IAcumaticaClient
     /// from this single read. Empty if no team GI is configured.
     /// </summary>
     Task<IReadOnlyList<TeamMemberRow>> GetTeamRowsAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Writes the dataroom + client-upload URLs to the project's DataUrl/ClientUrl attributes via the
+    /// contract-based REST API. No-op when the attribute IDs aren't configured. Returns true on success.
+    /// </summary>
+    Task<bool> WriteProjectUrlsAsync(string projectId, string? dataUrl, string? clientUrl, CancellationToken cancellationToken);
 }
 
 /// <summary>One row from the team GI: a person on a project, with the link's last-modified date.</summary>

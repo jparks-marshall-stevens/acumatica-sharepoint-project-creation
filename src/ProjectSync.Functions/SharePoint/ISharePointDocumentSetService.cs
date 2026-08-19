@@ -67,7 +67,7 @@ public sealed record ReconcileResult
 /// existing SCOPING workspace was converted in place into the project workspace (no new folder, no move)
 /// — reported separately because it is the one path that rewrites another phase’s metadata and access.
 /// </summary>
-public sealed record DocumentSetResult(bool Created, string ServerRelativeUrl, bool Promoted = false);
+public sealed record DocumentSetResult(bool Created, string ServerRelativeUrl, bool Promoted = false, string? DataroomUrl = null, string? ClientUploadUrl = null);
 
 /// <summary>A scoping-phase workspace to create/ensure from a HubSpot deal.</summary>
 public sealed record ScopingWorkspace

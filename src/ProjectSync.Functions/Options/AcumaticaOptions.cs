@@ -71,6 +71,18 @@ public sealed class AcumaticaOptions
     /// </summary>
     public string HubSpotLinkField { get; set; } = string.Empty;
 
+    // --- Write-back of workspace URLs to the Acumatica project (contract-based REST API) ---
+
+    /// <summary>Contract-based endpoint version for the Default endpoint (e.g. "24.200.001").</summary>
+    public string ContractApiVersion { get; set; } = "24.200.001";
+
+    /// <summary>
+    /// When both attribute IDs are set, the sync writes the dataroom + client-upload URLs back to these
+    /// project ATTRIBUTES once, when the project's workspace is first created (or promoted). Blank = off.
+    /// </summary>
+    public string DataUrlAttributeId { get; set; } = string.Empty;
+    public string ClientUrlAttributeId { get; set; } = string.Empty;
+
     // --- Team GI (project employees, for permission sync) ---
     /// <summary>Name of the OData GI returning one row per (project, employee) with the employee email.</summary>
     public string TeamGenericInquiryName { get; set; } = string.Empty;

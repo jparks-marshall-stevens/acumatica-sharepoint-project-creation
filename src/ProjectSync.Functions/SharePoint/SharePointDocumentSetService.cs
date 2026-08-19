@@ -135,7 +135,8 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
             destination.PracticeLeaderEmail,
             cancellationToken);
 
-        return new DocumentSetResult(Created: true, serverRelativeUrl);
+        return new DocumentSetResult(Created: true, serverRelativeUrl,
+            DataroomUrl: BuildAbsoluteUrl(siteUrl, serverRelativeUrl), ClientUploadUrl: uploadLink);
     }
 
     public async Task<DocumentSetResult> EnsureScopingWorkspaceAsync(
@@ -738,7 +739,9 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
 
         // Deliberately NOT EnsureClientUploadsAsync — the scoping phase already created the folder and
         // minted the link (create-once). Re-running it would add a second folder and a duplicate link.
-        return new DocumentSetResult(Created: false, url, Promoted: true);
+        var promoteUpload = await ReadUploadLinkAsync(ctx, url);
+        return new DocumentSetResult(Created: false, url, Promoted: true,
+            DataroomUrl: BuildAbsoluteUrl(promoteSite, url), ClientUploadUrl: promoteUpload);
     }
 
     /// <summary>
