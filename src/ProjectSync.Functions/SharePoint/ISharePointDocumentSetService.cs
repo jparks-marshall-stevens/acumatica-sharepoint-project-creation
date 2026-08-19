@@ -37,6 +37,20 @@ public interface ISharePointDocumentSetService
         IReadOnlyList<AcumaticaProject> desiredProjects,
         IReadOnlySet<string>? onlyProjectIds,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Finds files added to any Client Uploads folder since <paramref name="since"/> and emails everyone
+    /// with access to that workspace (keeps the practice leader for scoping rooms, drops them for engagements).
+    /// </summary>
+    Task<ClientUploadScanResult> ScanAndNotifyClientUploadsAsync(DateTimeOffset since, CancellationToken cancellationToken);
+}
+
+/// <summary>Outcome of a client-upload scan.</summary>
+public sealed record ClientUploadScanResult
+{
+    public int WorkspacesWithNewFiles { get; set; }
+    public int NewFiles { get; set; }
+    public int Notified { get; set; }
 }
 
 /// <summary>Outcome of a reconcile pass.</summary>

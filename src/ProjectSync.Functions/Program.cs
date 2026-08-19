@@ -71,6 +71,7 @@ var host = new HostBuilder()
         services.AddSingleton(TimeProvider.System);
         services.AddScoped<ProjectSyncProcessor>();
         services.AddScoped<HubSpotScopingProcessor>();
+        services.AddScoped<ClientUploadProcessor>();
     })
     .Build();
 

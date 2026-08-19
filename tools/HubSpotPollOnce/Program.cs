@@ -89,6 +89,7 @@ file sealed class NoOpSharePoint : ISharePointDocumentSetService
     public DocumentSetPlan PlanDocumentSet(AcumaticaProject p) => throw new NotSupportedException();
     public Task<DocumentSetResult> EnsureScopingWorkspaceAsync(ScopingWorkspace w, CancellationToken ct) => throw new NotSupportedException();
     public Task<ReconcileResult> ReconcileAsync(IReadOnlyList<AcumaticaProject> d, IReadOnlySet<string>? o, CancellationToken ct) => throw new NotSupportedException();
+    public Task<ClientUploadScanResult> ScanAndNotifyClientUploadsAsync(DateTimeOffset since, CancellationToken ct) => throw new NotSupportedException();
 }
 
 file sealed class InMemoryLastRunStore : ILastRunStore

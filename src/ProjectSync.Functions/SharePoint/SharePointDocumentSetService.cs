@@ -325,6 +325,154 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         return origin + serverRelativeUrl.Replace(" ", "%20");
     }
 
+    /// <summary>
+    /// Finds files added to any "Client Uploads" folder since <paramref name="since"/> and emails everyone
+    /// with access to that workspace (the practice leader is kept for scoping rooms, dropped for engagements).
+    /// The email states how many files and lists their names. Fail-soft per workspace.
+    /// </summary>
+    public async Task<ClientUploadScanResult> ScanAndNotifyClientUploadsAsync(
+        DateTimeOffset since, CancellationToken cancellationToken)
+    {
+        var result = new ClientUploadScanResult();
+        var marker = "/" + _options.ClientUploadsFolderName.Trim('/') + "/";
+
+        foreach (var mapping in _options.PracticeMappings)
+        {
+            var siteUrl = string.IsNullOrWhiteSpace(mapping.SiteUrl) ? _options.SiteUrl : mapping.SiteUrl!;
+            using var ctx = await _contextFactory.CreateContextAsync(siteUrl);
+            var list = ctx.Web.Lists.GetByTitle(mapping.Library);
+            ctx.Load(list, l => l.RootFolder.ServerRelativeUrl);
+            await ctx.ExecuteQueryRetryAsync();
+
+            // All files created since the watermark, library-wide, then keep only those under a Client
+            // Uploads folder — grouped back to their owning document set.
+            var newByDocSet = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            var sinceUtc = since.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ");
+            ListItemCollectionPosition? position = null;
+            do
+            {
+                var query = new CamlQuery
+                {
+                    ViewXml =
+                        "<View Scope='RecursiveAll'><Query><Where><And>" +
+                        "<Eq><FieldRef Name='FSObjType'/><Value Type='Integer'>0</Value></Eq>" +
+                        $"<Gt><FieldRef Name='Created'/><Value Type='DateTime' IncludeTimeValue='TRUE'>{sinceUtc}</Value></Gt>" +
+                        "</And></Where></Query>" +
+                        "<ViewFields><FieldRef Name='FileRef'/><FieldRef Name='FileLeafRef'/></ViewFields>" +
+                        "<RowLimit Paged='TRUE'>1000</RowLimit></View>",
+                    ListItemCollectionPosition = position,
+                };
+                var items = list.GetItems(query);
+                ctx.Load(items, c => c.ListItemCollectionPosition, c => c.Include(i => i["FileRef"], i => i["FileLeafRef"]));
+                await ctx.ExecuteQueryRetryAsync();
+
+                foreach (var it in items)
+                {
+                    var fileRef = it["FileRef"]?.ToString();
+                    var leaf = it["FileLeafRef"]?.ToString();
+                    if (string.IsNullOrWhiteSpace(fileRef) || string.IsNullOrWhiteSpace(leaf))
+                    {
+                        continue;
+                    }
+
+                    var idx = fileRef.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+                    if (idx < 0)
+                    {
+                        continue; // not under a Client Uploads folder
+                    }
+
+                    var docSetUrl = fileRef[..idx];
+                    if (!newByDocSet.TryGetValue(docSetUrl, out var names))
+                    {
+                        names = new List<string>();
+                        newByDocSet[docSetUrl] = names;
+                    }
+
+                    names.Add(leaf!);
+                }
+
+                position = items.ListItemCollectionPosition;
+            }
+            while (position is not null);
+
+            foreach (var (docSetUrl, fileNames) in newByDocSet)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                result.NewFiles += fileNames.Count;
+                result.WorkspacesWithNewFiles++;
+
+                try
+                {
+                    var item = ctx.Web.GetFolderByServerRelativeUrl(ToServerRelative(docSetUrl)).ListItemAllFields;
+                    ctx.Load(item,
+                        i => i[_options.CustomerNameColumn], i => i[_options.ProjectNameColumn],
+                        i => i[_options.ProjectIdColumn], i => i[_options.OpportunityIdColumn],
+                        i => i[_options.StatusColumn], i => i[_options.ClientUploadLinkColumn]);
+                    ctx.Load(item.RoleAssignments, r => r.Include(a => a.Member.PrincipalType, a => a.Member.LoginName));
+                    await ctx.ExecuteQueryRetryAsync();
+
+                    string? Field(string col) => item.FieldValues.TryGetValue(col, out var v) ? v?.ToString() : null;
+                    var status = Field(_options.StatusColumn);
+                    var isScoping = string.Equals(status, _options.ScopingStatusValue, StringComparison.OrdinalIgnoreCase);
+
+                    var recipients = GranteeEmails(item.RoleAssignments);
+                    // Keep the practice leader for scoping rooms; drop for engagements (not delivering work).
+                    var exclude = isScoping ? null : mapping.PracticeLeaderEmail;
+
+                    var notice = new WorkspaceNotice
+                    {
+                        Phase = isScoping ? WorkspacePhase.Scoping : WorkspacePhase.Execution,
+                        CustomerName = Field(_options.CustomerNameColumn) ?? "(unknown)",
+                        EngagementName = Field(_options.ProjectNameColumn),
+                        IdLabel = isScoping ? "Opportunity #" : "Project ID",
+                        IdValue = isScoping ? Field(_options.OpportunityIdColumn) : Field(_options.ProjectIdColumn),
+                        Practice = mapping.Practice,
+                        DataroomUrl = BuildAbsoluteUrl(siteUrl, docSetUrl),
+                        UploadLinkUrl = Field(_options.ClientUploadLinkColumn),
+                    };
+                    var uploadsFolderUrl = BuildAbsoluteUrl(siteUrl, docSetUrl + "/" + _options.ClientUploadsFolderName);
+
+                    await _notifier.NotifyClientUploadAsync(
+                        notice, fileNames, uploadsFolderUrl, recipients, exclude, cancellationToken);
+                    result.Notified++;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to notify client uploads for {Url}; continuing.", docSetUrl);
+                }
+            }
+        }
+
+        _logger.LogInformation(
+            "Client-upload scan since {Since:o}: {Files} new file(s) across {Workspaces} workspace(s); {Notified} notified.",
+            since, result.NewFiles, result.WorkspacesWithNewFiles, result.Notified);
+        return result;
+    }
+
+    /// <summary>Resolves a document set's role assignments to the email addresses of its individual members.</summary>
+    private static IReadOnlyList<string> GranteeEmails(RoleAssignmentCollection roleAssignments)
+    {
+        var emails = new List<string>();
+        foreach (var ra in roleAssignments)
+        {
+            // Only individual users — skip the Owners group and the app principal.
+            if (ra.Member.PrincipalType != Microsoft.SharePoint.Client.Utilities.PrincipalType.User)
+            {
+                continue;
+            }
+
+            // Claims login looks like "i:0#.f|membership|user@domain"; the UPN/email is the trailing segment.
+            var login = ra.Member.LoginName ?? string.Empty;
+            var candidate = login.Split('|').LastOrDefault();
+            if (!string.IsNullOrWhiteSpace(candidate) && candidate.Contains('@'))
+            {
+                emails.Add(candidate.Trim());
+            }
+        }
+
+        return emails.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
     public DocumentSetPlan PlanDocumentSet(AcumaticaProject project)
     {
         var destination = ResolveDestination(project.Practice);

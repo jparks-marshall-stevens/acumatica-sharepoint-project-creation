@@ -35,6 +35,17 @@ public sealed class WorkspaceNotifier
         WorkspaceNotice notice, IEnumerable<string?> newlyAdded, string? leaderEmail, CancellationToken cancellationToken)
         => SendAsync(() => WorkspaceEmail.BuildAccessAdded(notice, _options.LogoUrl), newlyAdded, leaderEmail, "access-added", notice, cancellationToken);
 
+    /// <summary>
+    /// Notifies everyone with access to a workspace that the client uploaded files. <paramref name="excludeEmail"/>
+    /// is the practice leader to drop for engagements (Bruce isn't delivering execution work); pass null for
+    /// scoping rooms so he stays included.
+    /// </summary>
+    public Task NotifyClientUploadAsync(
+        WorkspaceNotice notice, IReadOnlyList<string> fileNames, string uploadsFolderUrl,
+        IEnumerable<string?> recipients, string? excludeEmail, CancellationToken cancellationToken)
+        => SendAsync(() => WorkspaceEmail.BuildClientUpload(notice, fileNames, uploadsFolderUrl, _options.LogoUrl),
+            recipients, excludeEmail, "client-upload", notice, cancellationToken);
+
     private async Task SendAsync(
         Func<(string Subject, string Html)> build,
         IEnumerable<string?> recipients,

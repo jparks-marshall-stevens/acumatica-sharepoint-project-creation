@@ -96,6 +96,16 @@ await notifier.NotifyCreatedAsync(execution, fakeLive, leader, CancellationToken
 Console.WriteLine("Sending: access-added…");
 await notifier.NotifyAccessAddedAsync(execution, new[] { "someone.live@example.com" }, leader, CancellationToken.None);
 
+// Client-upload samples: scoping KEEPS the practice leader (Bruce); execution DROPS him.
+var uploadedFiles = new[] { "Trust Agreement.pdf", "2024 Financial Statements.xlsx", "Appraisal - Building A.pdf" };
+var uploadRecipients = new[] { "someone.live@example.com", leader }.Concat(admins).ToArray();
+
+Console.WriteLine("Sending: client-upload (scoping — Bruce included)…");
+await notifier.NotifyClientUploadAsync(scoping, uploadedFiles, scoping.DataroomUrl + "/Client%20Uploads", uploadRecipients, null, CancellationToken.None);
+
+Console.WriteLine("Sending: client-upload (engagement — Bruce excluded)…");
+await notifier.NotifyClientUploadAsync(execution, uploadedFiles, execution.DataroomUrl + "/Client%20Uploads", uploadRecipients, leader, CancellationToken.None);
+
 Console.WriteLine();
 Console.WriteLine($"✔ Done. If successful, three '[TEST]' emails are in {n.TestRecipient}'s inbox.");
 Console.WriteLine("  (Look for a 'Sent ... as ...' line above for each; a 'Graph sendMail failed' line means check the error.)");

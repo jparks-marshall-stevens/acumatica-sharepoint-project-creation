@@ -9,6 +9,7 @@
     <Project Path="tools/AcumaticaConnectivityTest/AcumaticaConnectivityTest.csproj" />
     <Project Path="tools/ApplyPracticeAdmins/ApplyPracticeAdmins.csproj" />
     <Project Path="tools/BackfillOpportunityIds/BackfillOpportunityIds.csproj" />
+    <Project Path="tools/ClientUploadNotifyOnce/ClientUploadNotifyOnce.csproj" />
     <Project Path="tools/CreateOneDocumentSet/CreateOneDocumentSet.csproj" />
     <Project Path="tools/CreateOneScopingWorkspace/CreateOneScopingWorkspace.csproj" />
     <Project Path="tools/HubSpotConnectivityTest/HubSpotConnectivityTest.csproj" />
