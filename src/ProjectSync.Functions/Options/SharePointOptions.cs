@@ -152,6 +152,14 @@ public sealed class PracticeMappingEntry
     /// </summary>
     public string? PracticeLeaderEmail { get; set; }
 
+    /// <summary>
+    /// Emails/UPNs of practice administrators granted access to EVERY document set for this practice —
+    /// both scoping and execution phases — alongside the practice leader (resolved via EnsureUser).
+    /// For office staff who support the whole practice (e.g. a practice admin). Scoped per practice, so
+    /// an admin on one practice is not granted on another. Optional.
+    /// </summary>
+    public List<string> AdminEmails { get; set; } = new();
+
     /// <summary>Optional site override. If null/empty, <see cref="SharePointOptions.SiteUrl"/> is used.</summary>
     public string? SiteUrl { get; set; }
 

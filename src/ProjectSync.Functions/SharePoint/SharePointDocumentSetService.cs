@@ -50,7 +50,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         {
             _logger.LogInformation("Document set for project {ProjectId} already exists at {Url}; updating metadata + permissions.",
                 project.ProjectId, existing);
-            var sig = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail);
+            var sig = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail, destination.AdminEmails);
             await ApplyMetadataAsync(ctx, existing, project, sig, cancellationToken);
             await ApplyPermissionsAsync(ctx, existing, project, destination, cancellationToken);
             return new DocumentSetResult(Created: false, existing);
@@ -112,7 +112,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         await ctx.ExecuteQueryRetryAsync();
 
         var serverRelativeUrl = created.Value;
-        var newSig = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail);
+        var newSig = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail, destination.AdminEmails);
         await ApplyMetadataAsync(ctx, serverRelativeUrl, project, newSig, cancellationToken);
         await ApplyPermissionsAsync(ctx, serverRelativeUrl, project, destination, cancellationToken);
 
@@ -268,7 +268,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
                 }
 
                 considered++;
-                var desiredSig = ReconcileSignature.Compute(x.Project, x.Dest.PracticeLeaderEmail);
+                var desiredSig = ReconcileSignature.Compute(x.Project, x.Dest.PracticeLeaderEmail, x.Dest.AdminEmails);
                 if (string.Equals(desiredSig, t.Signature, StringComparison.OrdinalIgnoreCase))
                 {
                     unchanged++;
@@ -471,7 +471,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
             project.CustomerName, project.ProjectId, _options.DocumentSetNameMaxLength);
         var url = await TryRenameDocumentSetAsync(ctx, scopingUrl, desiredName, project.ProjectId, cancellationToken);
 
-        var signature = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail);
+        var signature = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail, destination.AdminEmails);
         await ApplyMetadataAsync(ctx, url, project, signature, cancellationToken);
 
         // Authoritative reset: the scoping grantees (the deal owner) give way to the delivery team.
@@ -638,6 +638,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
             : project.ProjectManager;
         var identities = new List<string?> { pmIdentity, destination.PracticeLeaderEmail };
         identities.AddRange(project.TeamEmails);
+        identities.AddRange(destination.AdminEmails);
         return ApplyPermissionsCoreAsync(ctx, serverRelativeUrl, identities, $"project {project.ProjectId}", cancellationToken);
     }
 
@@ -791,8 +792,9 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
     private Task ApplyScopingPermissionsAsync(
         ClientContext ctx, string serverRelativeUrl, ScopingWorkspace ws, PracticeMappingEntry destination, CancellationToken cancellationToken)
     {
-        // Scoping access: the deal owner + the practice leader.
+        // Scoping access: the deal owner + the practice leader + practice admins.
         var identities = new List<string?> { ws.OwnerEmail, destination.PracticeLeaderEmail };
+        identities.AddRange(destination.AdminEmails);
         return ApplyPermissionsCoreAsync(ctx, serverRelativeUrl, identities, $"deal {ws.DealId}", cancellationToken);
     }
 
