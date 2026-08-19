@@ -101,8 +101,7 @@ public static class WorkspaceEmail
         inner.Append(DetailTable(n));
         inner.Append(FileList(fileNames));
         inner.Append(Buttons(
-            (label: "Open the client uploads", url: uploadsFolderUrl, primary: true),
-            (label: "Open the dataroom", url: n.DataroomUrl, primary: false)));
+            (label: "Open the client uploads", url: uploadsFolderUrl, primary: true)));
 
         return (subject, Shell(BrandTeal, kicker, title, logoUrl, inner.ToString()));
     }
