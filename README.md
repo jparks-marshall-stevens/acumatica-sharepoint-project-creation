@@ -47,6 +47,13 @@ Beyond create-on-new, two timers keep **already-tracked** Acumatica doc sets cur
 
 Permissions include the **project team** (from the `EPEmployeeContract` team GI) alongside PM + leader.
 
+> **Schedule gap (intentional):** the two Acumatica timers (`ProjectSyncSchedule`,
+> `ProjectSyncReconcileSchedule`) run `0 0,15,30,45 0-8,10-23 * * *` — every 15 min **except the 09:00
+> UTC hour**. The Acumatica OAuth token endpoint hangs to a 100 s timeout every day at exactly
+> 09:15:00 UTC (04:15 ET), failing those runs and firing the `ProjectSync-Errors` alert. Skipping the
+> hour avoids it without swallowing errors; watermark-gating means nothing is lost. Don't "fix" this
+> back to `*/15` until whatever runs on the ERP at 04:15 ET is identified.
+
 ### Promotion (scoping → execution)
 
 When a HubSpot deal becomes an Acumatica project, the existing scoping workspace is **converted in place**
