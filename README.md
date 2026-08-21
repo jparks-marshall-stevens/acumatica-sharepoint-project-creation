@@ -129,6 +129,10 @@ Tests: `tests/ProjectSync.Functions.Tests` (xUnit + Moq).
 
 ### Diagnostic tools (`tools/`)
 Each reads config from `local.settings.json` and needs no Functions runtime:
+- **`ProvisionPracticeSite`** — provisions a NEW practice site so it mirrors Gift & Estate: reads G&E's
+  "Project" Document Set content type + base columns and reproduces them on the target site, along with
+  `Projects/Current` (locked) and versioning. Dry-run by default; `--apply` to write. Requires the
+  one-time `bootstrap-practice-site.ps1` (site creation + cert grant) first. See "add a practice" above.
 - **`AcumaticaConnectivityTest`** — verifies Acumatica auth + GI field mapping.
 - **`ProjectSyncDryRun -- <days>`** — previews what would be created (+ PM email-domain breakdown).
 - **`SharePointConnectivityTest`** — verifies SharePoint auth, library, content type, column names (read-only).
@@ -183,9 +187,20 @@ SharePoint:PracticeMappings:0:Library            = Documents
 SharePoint:PracticeMappings:0:ParentFolder       = Projects/Current
 ```
 
-To add a practice: add an entry (`:1:…`) with its own site/library, add the practice to
-`Acumatica:IncludedPractices`, grant the app `fullControl` on that site, and provision the library
-(the "Project" content type + the metadata columns). `SharePointConnectivityTest` verifies a site's setup.
+To add a practice, use the two-step provisioning flow (see `tools/ProvisionPracticeSite`):
+
+1. **One-time, admin-only bootstrap** (`bootstrap-practice-site.ps1`, run interactively with your own
+   SharePoint-admin identity — no app registration): creates the empty site collection matching the
+   Gift & Estate template and grants the cert app `Sites.Selected fullControl` on it.
+2. **Repeatable provisioning** (`ProvisionPracticeSite`, cert auth like every other tool): mirrors the
+   G&E library structure onto the new site — the "Project" Document Set content type, the four base
+   metadata columns (read off G&E so the *global* internal names match exactly), `Projects/Current`
+   (locked to code-only creation), and versioning. It then prints the ready-to-paste `PracticeMappings`
+   entry.
+
+The `PracticeMappings` entry and the site provisioning are **inert on their own**: the sync only touches
+a practice once it is added to `Acumatica:IncludedPractices` **and** `HubSpot:IncludedPractices` — that
+allow-list addition is the single go-live switch. `SharePointConnectivityTest` verifies a site's setup.
 
 ### HubSpot scoping (`HubSpot:*`)
 A second source: the **`HubSpotScopingPoll`** timer (`%HubSpotScopingSchedule%`) polls HubSpot deals
@@ -214,6 +229,19 @@ persists until the deal next changes. `BackfillOpportunityIds` re-syncs names on
 - **Watermark + floors**: `FirstRunLookbackHours` (default 0 = moving-forward); `CreatedAfter` — an
   optional created-date floor so pre-existing open deals aren't backfilled when HubSpot bumps their
   modified date. Search paging respects HubSpot's 10,000-result window and retries on HTTP 429.
+
+### Notifications (`Notifications:*`)
+Workspace emails (created / access-added / client-upload) are sent via Microsoft Graph `sendMail` as
+`FromAddress` (a no-reply mailbox; the app's `Mail.Send` is scoped to it by an Exchange Application
+Access Policy). `Enabled = false` composes/sends nothing. Two rollout safety valves redirect email to
+`TestRecipient` (intended recipients shown in the subject, BCC dropped):
+- **`TestMode`** (bool) — **global**: every practice's email is redirected. `[TEST]` subject tag.
+- **`SilentPractices`** (indexed list) — **per-practice**: only the named practices are redirected;
+  every other practice emails its real recipients normally. `[SILENT]` subject tag. Use it to switch a
+  **new** practice on for verification without diverting a **live** practice's (e.g. Estate & Gift) mail.
+  Matched case-insensitively against the workspace's practice, token-by-token for multi-select values.
+  Example: `Notifications:SilentPractices:0 = Marital Dissolution` (env-var form
+  `Notifications__SilentPractices__0`). `TestMode`, when on, still overrides and redirects everything.
 
 ## Local development
 
