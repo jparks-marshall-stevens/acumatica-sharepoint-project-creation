@@ -156,6 +156,24 @@ public class WorkspaceNotifierTests
     }
 
     [Fact]
+    public void Created_Kicker_ReflectsActualPractice_NotHardcodedGiftEstate()
+    {
+        var n = Notice() with { Practice = "Financial & Tax Reporting" };
+        var (_, html) = WorkspaceEmail.BuildCreated(n);
+        Assert.Contains("Financial &amp; Tax Reporting", html);   // real practice in the header kicker
+        Assert.DoesNotContain("Gift &amp; Estate", html);          // no longer hardcoded
+    }
+
+    [Fact]
+    public void ClientUpload_Kicker_ReflectsActualPractice()
+    {
+        var n = Notice() with { Practice = "Tangible Assets" };
+        var (_, html) = WorkspaceEmail.BuildClientUpload(n, new[] { "a.pdf" }, "https://x/upload");
+        Assert.Contains("Tangible Assets", html);
+        Assert.DoesNotContain("Gift &amp; Estate", html);
+    }
+
+    [Fact]
     public void Created_WithoutUploadLink_OmitsUploadButton()
     {
         var noLink = Notice() with { UploadLinkUrl = null };

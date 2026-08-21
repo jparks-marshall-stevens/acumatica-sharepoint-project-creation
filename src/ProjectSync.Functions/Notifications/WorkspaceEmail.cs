@@ -46,7 +46,7 @@ public static class WorkspaceEmail
     {
         var kind = n.Phase == WorkspacePhase.Scoping ? "scoping" : "project";
         var subject = $"New {kind} dataroom — {Suffix(n)}";
-        var kicker = n.Phase == WorkspacePhase.Scoping ? "Scoping · Gift &amp; Estate" : "Active project · Gift &amp; Estate";
+        var kicker = Kicker(n.Phase == WorkspacePhase.Scoping ? "Scoping" : "Active project", n.Practice);
         var title = n.Phase == WorkspacePhase.Scoping ? "A scoping dataroom is ready" : "A project dataroom is ready";
         const string intro = "A workspace has been created for the engagement below. You're receiving this because you have access to it.";
 
@@ -67,7 +67,7 @@ public static class WorkspaceEmail
     public static (string Subject, string Html) BuildAccessAdded(WorkspaceNotice n, string? logoUrl = null)
     {
         var subject = $"You've been added — {Suffix(n)}";
-        const string kicker = "Access granted · Gift &amp; Estate";
+        var kicker = Kicker("Access granted", n.Practice);
         const string title = "You now have access to a dataroom";
         const string intro = "You've been given access to the workspace below, so you can start work. You're receiving this because your access was just added.";
 
@@ -92,7 +92,7 @@ public static class WorkspaceEmail
         var count = fileNames.Count;
         var noun = count == 1 ? "file" : "files";
         var subject = $"Client uploaded {count} {noun} — {Suffix(n)}";
-        const string kicker = "Client upload · Gift &amp; Estate";
+        var kicker = Kicker("Client upload", n.Practice);
         var title = $"{count} new client {noun} uploaded";
         var intro = $"The client uploaded {count} new {noun} to the client uploads folder for the engagement below. You're receiving this because you have access to it.";
 
@@ -108,6 +108,24 @@ public static class WorkspaceEmail
 
     private static string Suffix(WorkspaceNotice n) =>
         string.IsNullOrWhiteSpace(n.IdValue) ? n.CustomerName : $"{n.CustomerName} ({n.IdValue})";
+
+    /// <summary>
+    /// Header kicker "{status} &middot; {PRACTICE}" (the practice is uppercased by CSS in the shell). Reads
+    /// the workspace's actual practice rather than hard-coding one; falls back to just the status when the
+    /// practice is blank, and shows only the first value of a ';'-delimited multi-select. HTML-encoded.
+    /// </summary>
+    private static string Kicker(string status, string? practice)
+    {
+        if (string.IsNullOrWhiteSpace(practice))
+        {
+            return status;
+        }
+
+        var first = practice
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault() ?? practice.Trim();
+        return $"{status} · {Html(first)}";
+    }
 
     // ----- HTML fragments -----
 
