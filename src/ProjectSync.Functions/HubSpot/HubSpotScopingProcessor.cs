@@ -70,6 +70,7 @@ public sealed class HubSpotScopingProcessor
         // offending deal (the rest retries next cycle).
         var ordered = inScope.OrderBy(d => d.ModifiedAt ?? queryFrom).ToList();
         var owners = await _hubspot.GetOwnerEmailsAsync(cancellationToken);
+        string? Resolve(string? ownerId) => ownerId is { } x && owners.TryGetValue(x, out var e) ? e : null;
         var plan = new List<ScopingWorkspacePlan>();
         int created = 0, updated = 0;
         var hadFailure = false;
@@ -79,7 +80,10 @@ public sealed class HubSpotScopingProcessor
         {
             cancellationToken.ThrowIfCancellationRequested();
             var customer = await _hubspot.ResolveCustomerNameAsync(deal, cancellationToken);
-            var ownerEmail = deal.OwnerId is { } oid && owners.TryGetValue(oid, out var em) ? em : null;
+            var ownerEmail = Resolve(deal.OwnerId);
+            var pmEmail = Resolve(deal.ProjectManagerId);
+            var originatorAEmail = Resolve(deal.OriginatorAId);
+            var originatorBEmail = Resolve(deal.OriginatorBId);
             plan.Add(new ScopingWorkspacePlan
             {
                 DealId = deal.DealId,
@@ -87,6 +91,9 @@ public sealed class HubSpotScopingProcessor
                 ProjectName = deal.DealName,
                 Practice = deal.Practice,
                 OwnerEmail = ownerEmail,
+                ProjectManagerEmail = pmEmail,
+                OriginatorAEmail = originatorAEmail,
+                OriginatorBEmail = originatorBEmail,
                 StageId = deal.StageId,
             });
 
@@ -101,6 +108,9 @@ public sealed class HubSpotScopingProcessor
                         ProjectName = deal.DealName,
                         Practice = deal.Practice,
                         OwnerEmail = ownerEmail,
+                        ProjectManagerEmail = pmEmail,
+                        OriginatorAEmail = originatorAEmail,
+                        OriginatorBEmail = originatorBEmail,
                         OpportunityId = deal.OpportunityId,
                     }, cancellationToken);
 
@@ -183,5 +193,8 @@ public sealed record ScopingWorkspacePlan
     public string? ProjectName { get; init; }
     public string? Practice { get; init; }
     public string? OwnerEmail { get; init; }
+    public string? ProjectManagerEmail { get; init; }
+    public string? OriginatorAEmail { get; init; }
+    public string? OriginatorBEmail { get; init; }
     public string? StageId { get; init; }
 }

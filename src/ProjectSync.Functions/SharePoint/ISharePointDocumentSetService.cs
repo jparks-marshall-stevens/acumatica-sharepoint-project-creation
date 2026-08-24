@@ -90,6 +90,14 @@ public sealed record ScopingWorkspace
     public string? OwnerEmail { get; init; }
 
     /// <summary>
+    /// The project manager and originators A/B (resolved emails). Granted Edit and notified alongside the
+    /// deal owner. The project manager, when present, also becomes the room's Project Manager metadata.
+    /// </summary>
+    public string? ProjectManagerEmail { get; init; }
+    public string? OriginatorAEmail { get; init; }
+    public string? OriginatorBEmail { get; init; }
+
+    /// <summary>
     /// Human-facing opportunity number, refreshed on every poll. Not the idempotency key (the deal id is) —
     /// it is the value an Acumatica project's PQCode is matched against at promotion.
     /// </summary>

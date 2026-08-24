@@ -256,6 +256,9 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
     private static IEnumerable<string?> ScopingRecipients(ScopingWorkspace ws, PracticeMappingEntry destination)
     {
         yield return ws.OwnerEmail;
+        yield return ws.ProjectManagerEmail;
+        yield return ws.OriginatorAEmail;
+        yield return ws.OriginatorBEmail;
         foreach (var e in destination.AdminEmails) yield return e;
     }
 
@@ -1107,11 +1110,13 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         ctx.Load(item);
         await ctx.ExecuteQueryRetryAsync();
 
-        // Resolve the owner into the PM People field first (own round-trip), so field writes stay in one Update.
+        // Resolve the PM People field first (own round-trip), so field writes stay in one Update. Prefer the
+        // deal's actual project manager; fall back to the deal owner when no PM is set on the deal.
+        var pmIdentity = !string.IsNullOrWhiteSpace(ws.ProjectManagerEmail) ? ws.ProjectManagerEmail : ws.OwnerEmail;
         FieldUserValue? pmValue = null;
-        if (_options.ProjectManagerIsPersonColumn && !string.IsNullOrWhiteSpace(ws.OwnerEmail))
+        if (_options.ProjectManagerIsPersonColumn && !string.IsNullOrWhiteSpace(pmIdentity))
         {
-            pmValue = await ResolvePersonAsync(ctx, _options.ProjectManagerColumn, item, ws.OwnerEmail, null);
+            pmValue = await ResolvePersonAsync(ctx, _options.ProjectManagerColumn, item, pmIdentity, null);
         }
 
         SetIfPresent(item, _options.CustomerNameColumn, ws.CustomerName);
@@ -1133,8 +1138,12 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
     private Task<IReadOnlyList<string>> ApplyScopingPermissionsAsync(
         ClientContext ctx, string serverRelativeUrl, ScopingWorkspace ws, PracticeMappingEntry destination, CancellationToken cancellationToken)
     {
-        // Scoping access: the deal owner + the practice leader + practice admins.
-        var identities = new List<string?> { ws.OwnerEmail, destination.PracticeLeaderEmail };
+        // Scoping access: the deal owner + project manager + originators A/B + the practice leader + admins.
+        var identities = new List<string?>
+        {
+            ws.OwnerEmail, ws.ProjectManagerEmail, ws.OriginatorAEmail, ws.OriginatorBEmail,
+            destination.PracticeLeaderEmail,
+        };
         identities.AddRange(destination.AdminEmails);
         return ApplyPermissionsCoreAsync(ctx, serverRelativeUrl, identities, $"deal {ws.DealId}", cancellationToken);
     }

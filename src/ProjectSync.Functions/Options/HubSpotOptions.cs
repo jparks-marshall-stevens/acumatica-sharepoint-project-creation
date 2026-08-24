@@ -84,6 +84,16 @@ public sealed class HubSpotOptions
     public string OwnerIdProperty { get; set; } = "hubspot_owner_id";
 
     /// <summary>
+    /// Deal properties for the additional people who should get access to (and be notified about) a scoping
+    /// room, alongside the deal owner: the project manager and originators A/B. All three are HubSpot
+    /// owner/user reference fields (they hold an owner id), so each is resolved to an email through the same
+    /// owner→email map as the deal owner. Blank disables that role.
+    /// </summary>
+    public string ProjectManagerProperty { get; set; } = "project_manager";
+    public string OriginatorAProperty { get; set; } = "originator_a";
+    public string OriginatorBProperty { get; set; } = "originator_b";
+
+    /// <summary>
     /// Deal property that points directly at the client contact. Default "client_contact_id". When blank
     /// on a deal, the client contact is found via the labeled association <see cref="ClientContactLabel"/>.
     /// </summary>

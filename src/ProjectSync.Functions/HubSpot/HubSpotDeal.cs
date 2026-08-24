@@ -17,6 +17,14 @@ public sealed record HubSpotDeal
     public string? OwnerId { get; init; }
     public string? OwnerEmail { get; init; }
 
+    /// <summary>
+    /// Additional owner-reference roles (each holds a HubSpot owner id, resolved to an email later):
+    /// the project manager and originators A/B. They get access to and are notified about the scoping room.
+    /// </summary>
+    public string? ProjectManagerId { get; init; }
+    public string? OriginatorAId { get; init; }
+    public string? OriginatorBId { get; init; }
+
     /// <summary>Id of the deal's client contact (from the client-contact-id property), if set.</summary>
     public string? ClientContactId { get; init; }
 
