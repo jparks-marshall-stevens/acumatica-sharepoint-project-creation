@@ -5,6 +5,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.SharePoint.Client;
+using Microsoft.SharePoint.Client.DocumentSet;
 using ProjectSync.Options;
 using ProjectSync.SharePoint;
 
@@ -113,6 +114,9 @@ foreach (var f in source.Fields)
 {
     Console.WriteLine($"  Column           : {f.InternalName} ({f.Type})");
 }
+Console.WriteLine($"  Default view     : {string.Join(", ", source.DefaultViewFields)}");
+Console.WriteLine($"  Welcome page     : {(source.WelcomePageFields.Count > 0 ? string.Join(", ", source.WelcomePageFields) : "(none)")}");
+Console.WriteLine($"  Shared columns   : {(source.SharedFields.Count > 0 ? string.Join(", ", source.SharedFields) : "(none)")}");
 Console.WriteLine();
 
 var missingOnSource = baseColumns.Where(c => source.Fields.All(f => f.InternalName != c)).ToArray();
@@ -271,6 +275,86 @@ using (ctx)
         Console.WriteLine($"✔ versioning already matches source (Enable={list.EnableVersioning}, MajorLimit={list.MajorVersionLimit}).");
     }
 
+    // --- 6b. Mirror the document-set VIEW + shared columns so the room looks identical to the source ---
+    // Ensure any extra custom columns the source view references (e.g. ClientUploadLink) exist as LIST columns.
+    ctx.Load(list.Fields, fs => fs.Include(f => f.InternalName));
+    await ctx.ExecuteQueryRetryAsync();
+    var listFieldNames = new HashSet<string>(list.Fields.Select(f => f.InternalName), StringComparer.Ordinal);
+    foreach (var col in source.ExtraColumns)
+    {
+        if (listFieldNames.Contains(col.InternalName)) { Console.WriteLine($"✔ view column '{col.InternalName}' already exists."); continue; }
+        Console.WriteLine($"{Tag(apply)} create view column '{col.InternalName}' ({col.Type}).");
+        if (apply)
+        {
+            list.Fields.AddFieldAsXml(col.SchemaXml, addToDefaultView: false, options: AddFieldOptions.AddFieldInternalNameHint);
+            await ctx.ExecuteQueryRetryAsync();
+        }
+    }
+
+    // Match the library's default view columns to the source, exactly (order included).
+    ctx.Load(list.DefaultView, v => v.ViewFields);
+    await ctx.ExecuteQueryRetryAsync();
+    var currentView = list.DefaultView.ViewFields.ToList();
+    if (!currentView.SequenceEqual(source.DefaultViewFields, StringComparer.Ordinal))
+    {
+        Console.WriteLine($"{Tag(apply)} set default view columns → {string.Join(", ", source.DefaultViewFields)}");
+        if (apply)
+        {
+            list.DefaultView.ViewFields.RemoveAll();
+            foreach (var f in source.DefaultViewFields) list.DefaultView.ViewFields.Add(f);
+            list.DefaultView.Update();
+            await ctx.ExecuteQueryRetryAsync();
+        }
+    }
+    else
+    {
+        Console.WriteLine("✔ default view columns already match source.");
+    }
+
+    // Match the Document Set shared columns (pushed down to files inside the set). Add-only.
+    if (source.SharedFields.Count > 0)
+    {
+        var sharedCt = list.ContentTypes.FirstOrDefault(c =>
+            string.Equals(c.Name, spOptions.DocumentSetContentType, StringComparison.OrdinalIgnoreCase));
+        if (sharedCt is null)
+        {
+            Console.WriteLine("  (shared columns: 'Project' content type not present yet; skipping)");
+        }
+        else if (!apply)
+        {
+            Console.WriteLine($"{Tag(apply)} set document-set shared columns → {string.Join(", ", source.SharedFields)}");
+        }
+        else
+        {
+            try
+            {
+                var tmpl = DocumentSetTemplate.GetDocumentSetTemplate(ctx, sharedCt);
+                ctx.Load(tmpl, t => t.SharedFields.Include(f => f.InternalName));
+                await ctx.ExecuteQueryRetryAsync();
+                var have = new HashSet<string>(tmpl.SharedFields.Select(f => f.InternalName), StringComparer.Ordinal);
+                var toAdd = source.SharedFields.Where(n => !have.Contains(n)).ToList();
+                foreach (var name in toAdd)
+                {
+                    tmpl.SharedFields.Add(list.Fields.GetByInternalNameOrTitle(name));
+                }
+                if (toAdd.Count > 0)
+                {
+                    tmpl.Update(true);
+                    await ctx.ExecuteQueryRetryAsync();
+                    Console.WriteLine($"  → set {toAdd.Count} document-set shared column(s): {string.Join(", ", toAdd)}");
+                }
+                else
+                {
+                    Console.WriteLine("✔ document-set shared columns already match source.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"  ⚠ could not set document-set shared columns: {ex.Message}");
+            }
+        }
+    }
+
     // --- 7. Folder scaffold (Projects/Current) ---
     var scaffold = parentFolder.Split(new[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries);
     var currentUrl = $"{list.RootFolder.ServerRelativeUrl}/{string.Join('/', scaffold)}";
@@ -373,12 +457,32 @@ async Task<SourceModel> ReadSourceAsync(
     var list = ctx.Web.Lists.GetByTitle(library);
     ctx.Load(list, l => l.EnableVersioning, l => l.MajorVersionLimit);
     ctx.Load(list.ContentTypes, cts => cts.Include(c => c.Name, c => c.StringId, c => c.Parent.StringId));
-    ctx.Load(list.Fields, fs => fs.Include(f => f.InternalName, f => f.TypeAsString, f => f.SchemaXml));
+    ctx.Load(list.Fields, fs => fs.Include(f => f.InternalName, f => f.TypeAsString, f => f.SchemaXml, f => f.FromBaseType, f => f.Hidden));
+    ctx.Load(list.DefaultView, v => v.ViewFields);
     await ctx.ExecuteQueryRetryAsync();
 
     var ct = list.ContentTypes.FirstOrDefault(c => string.Equals(c.Name, ctName, StringComparison.OrdinalIgnoreCase))
         ?? throw new InvalidOperationException($"Content type '{ctName}' not found on source library '{library}'.");
 
+    // The Document Set's welcome-page + shared columns (what you see when you open a document set).
+    var welcome = new List<string>();
+    var shared = new List<string>();
+    try
+    {
+        var tmpl = DocumentSetTemplate.GetDocumentSetTemplate(ctx, ct);
+        ctx.Load(tmpl, t => t.WelcomePageFields.Include(f => f.InternalName), t => t.SharedFields.Include(f => f.InternalName));
+        await ctx.ExecuteQueryRetryAsync();
+        welcome.AddRange(tmpl.WelcomePageFields.Select(f => f.InternalName));
+        shared.AddRange(tmpl.SharedFields.Select(f => f.InternalName));
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"  (note: could not read source Document Set template: {ex.Message})");
+    }
+
+    var viewFields = list.DefaultView.ViewFields.ToList();
+
+    // The configured base columns (site columns bound to the CT).
     var fields = new List<SourceField>();
     foreach (var col in wantedColumns)
     {
@@ -389,12 +493,30 @@ async Task<SourceModel> ReadSourceAsync(
         }
     }
 
+    // Extra custom (non-base, non-hidden) fields the view / shared config references but that aren't base
+    // columns — e.g. ClientUploadLink. Reproduced as LIST columns so the target view can show them.
+    var baseSet = new HashSet<string>(wantedColumns, StringComparer.OrdinalIgnoreCase);
+    var referenced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var n in viewFields) referenced.Add(n);
+    foreach (var n in shared) referenced.Add(n);
+    var extra = new List<SourceField>();
+    foreach (var field in list.Fields)
+    {
+        if (!referenced.Contains(field.InternalName) || baseSet.Contains(field.InternalName)) continue;
+        if (field.FromBaseType || field.Hidden) continue;   // built-ins/hidden exist on the target already
+        extra.Add(new SourceField(field.InternalName, field.TypeAsString, SanitizeFieldSchemaXml(field.SchemaXml)));
+    }
+
     return new SourceModel(
         WebTemplate: $"{ctx.Web.WebTemplate}#{ctx.Web.Configuration}",
         ParentContentTypeId: ct.Parent.StringId,
         EnableVersioning: list.EnableVersioning,
         MajorVersionLimit: list.MajorVersionLimit,
-        Fields: fields);
+        Fields: fields,
+        ExtraColumns: extra,
+        DefaultViewFields: viewFields,
+        WelcomePageFields: welcome,
+        SharedFields: shared);
 }
 
 // Strips site-specific attributes so the field can be re-created cleanly on another site while KEEPING the
@@ -555,4 +677,5 @@ sealed record SourceField(string InternalName, string Type, string SchemaXml);
 
 sealed record SourceModel(
     string WebTemplate, string ParentContentTypeId, bool EnableVersioning, int MajorVersionLimit,
-    List<SourceField> Fields);
+    List<SourceField> Fields, List<SourceField> ExtraColumns,
+    List<string> DefaultViewFields, List<string> WelcomePageFields, List<string> SharedFields);
