@@ -155,6 +155,13 @@ public sealed class PracticeMappingEntry
     public string Practice { get; set; } = string.Empty;
 
     /// <summary>
+    /// Optional friendly practice name shown to people (e.g. in notification emails). Use when the source
+    /// system's practice value reads differently from the brand — e.g. Acumatica's "Estate &amp; Gift"
+    /// should display as "Gift &amp; Estate". Falls back to <see cref="Practice"/> when unset.
+    /// </summary>
+    public string? DisplayName { get; set; }
+
+    /// <summary>
     /// Email/UPN of the practice leader granted access to every document set for this practice
     /// (resolved via EnsureUser). Optional.
     /// </summary>

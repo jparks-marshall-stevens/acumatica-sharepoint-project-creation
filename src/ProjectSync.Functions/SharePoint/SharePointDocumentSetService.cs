@@ -131,7 +131,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         }
 
         await _notifier.NotifyCreatedAsync(
-            ProjectNotice(project, siteUrl, serverRelativeUrl, uploadLink),
+            ProjectNotice(project, destination, siteUrl, serverRelativeUrl, uploadLink),
             ProjectRecipients(project, destination),
             destination.PracticeLeaderEmail,
             cancellationToken);
@@ -185,7 +185,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
             if (addedScoping.Count > 0)
             {
                 await _notifier.NotifyAccessAddedAsync(
-                    ScopingNotice(workspace, siteUrl, url, await ReadUploadLinkAsync(ctx, url)),
+                    ScopingNotice(workspace, destination, siteUrl, url, await ReadUploadLinkAsync(ctx, url)),
                     addedScoping, destination.PracticeLeaderEmail, cancellationToken);
             }
             return new DocumentSetResult(Created: false, url);
@@ -223,7 +223,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         }
 
         await _notifier.NotifyCreatedAsync(
-            ScopingNotice(workspace, siteUrl, serverRelativeUrl, scopingUploadLink),
+            ScopingNotice(workspace, destination, siteUrl, serverRelativeUrl, scopingUploadLink),
             ScopingRecipients(workspace, destination),
             destination.PracticeLeaderEmail,
             cancellationToken);
@@ -262,7 +262,11 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         foreach (var e in destination.AdminEmails) yield return e;
     }
 
-    private WorkspaceNotice ProjectNotice(AcumaticaProject p, string siteUrl, string serverRelativeUrl, string? uploadLink) => new()
+    /// <summary>The practice label to show people: the destination's DisplayName override, else the raw value.</summary>
+    private static string? PracticeLabel(PracticeMappingEntry destination, string? rawPractice)
+        => !string.IsNullOrWhiteSpace(destination.DisplayName) ? destination.DisplayName : rawPractice;
+
+    private WorkspaceNotice ProjectNotice(AcumaticaProject p, PracticeMappingEntry destination, string siteUrl, string serverRelativeUrl, string? uploadLink) => new()
     {
         Phase = WorkspacePhase.Execution,
         CustomerName = string.IsNullOrWhiteSpace(p.CustomerName) ? p.ProjectId : p.CustomerName!,
@@ -270,19 +274,19 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         IdLabel = "Project ID",
         IdValue = p.ProjectId,
         ProjectManager = p.ProjectManager,
-        Practice = p.Practice,
+        Practice = PracticeLabel(destination, p.Practice),
         DataroomUrl = BuildAbsoluteUrl(siteUrl, serverRelativeUrl),
         UploadLinkUrl = uploadLink,
     };
 
-    private WorkspaceNotice ScopingNotice(ScopingWorkspace w, string siteUrl, string serverRelativeUrl, string? uploadLink) => new()
+    private WorkspaceNotice ScopingNotice(ScopingWorkspace w, PracticeMappingEntry destination, string siteUrl, string serverRelativeUrl, string? uploadLink) => new()
     {
         Phase = WorkspacePhase.Scoping,
         CustomerName = w.CustomerName ?? w.OpportunityId ?? w.DealId,
         EngagementName = w.ProjectName,
         IdLabel = "Opportunity #",
         IdValue = w.OpportunityId ?? w.DealId,
-        Practice = w.Practice,
+        Practice = PracticeLabel(destination, w.Practice),
         DataroomUrl = BuildAbsoluteUrl(siteUrl, serverRelativeUrl),
         UploadLinkUrl = uploadLink,
     };
@@ -320,15 +324,15 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
 
         var uploadLink = await ReadUploadLinkAsync(ctx, serverRelativeUrl);
         await _notifier.NotifyAccessAddedAsync(
-            ProjectNotice(project, siteUrl, serverRelativeUrl, uploadLink),
+            ProjectNotice(project, destination, siteUrl, serverRelativeUrl, uploadLink),
             newlyAdded, destination.PracticeLeaderEmail, cancellationToken);
     }
 
+    // Delegates to the tested helper. DocumentSet.Create (and some other CSOM calls) can hand back an
+    // ABSOLUTE url; the helper normalizes it to a server-relative path first so the host isn't doubled
+    // (…sharepoint.com…sharepoint.com/sites/…) — the bug that broke "Open the dataroom" in creation emails.
     private static string BuildAbsoluteUrl(string siteUrl, string serverRelativeUrl)
-    {
-        var origin = new Uri(siteUrl).GetLeftPart(UriPartial.Authority);
-        return origin + serverRelativeUrl.Replace(" ", "%20");
-    }
+        => SharePointNaming.ToAbsoluteUrl(siteUrl, serverRelativeUrl);
 
     /// <summary>
     /// Finds files added to any "Client Uploads" folder since <paramref name="since"/> and emails everyone
@@ -431,7 +435,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
                         EngagementName = Field(_options.ProjectNameColumn),
                         IdLabel = isScoping ? "Opportunity #" : "Project ID",
                         IdValue = isScoping ? Field(_options.OpportunityIdColumn) : Field(_options.ProjectIdColumn),
-                        Practice = mapping.Practice,
+                        Practice = PracticeLabel(mapping, mapping.Practice),
                         DataroomUrl = BuildAbsoluteUrl(siteUrl, docSetUrl),
                         UploadLinkUrl = Field(_options.ClientUploadLinkColumn),
                     };

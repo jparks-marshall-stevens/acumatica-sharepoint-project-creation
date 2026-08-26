@@ -64,4 +64,23 @@ public class SharePointNamingTests
     {
         Assert.Equal("10-31-21-74655", SharePointNaming.BuildDocumentSetName(customer, "10-31-21-74655", 10));
     }
+
+    private const string Site = "https://marshallstevens.sharepoint.com/sites/GiftEstate";
+
+    [Fact]
+    public void ToAbsoluteUrl_ServerRelativePath_PrependsOrigin_EncodesSpaces()
+    {
+        var url = SharePointNaming.ToAbsoluteUrl(Site, "/sites/GiftEstate/Shared Documents/Projects/Current/Acme (123)");
+        Assert.Equal("https://marshallstevens.sharepoint.com/sites/GiftEstate/Shared%20Documents/Projects/Current/Acme%20(123)", url);
+    }
+
+    [Fact]
+    public void ToAbsoluteUrl_AbsoluteInput_DoesNotDoubleTheHost()
+    {
+        // DocumentSet.Create can return an absolute URL; feeding it back must NOT double the host.
+        var absolute = "https://marshallstevens.sharepoint.com/sites/GiftEstate/Shared%20Documents/Projects/Current/Acme%20(123)";
+        var url = SharePointNaming.ToAbsoluteUrl(Site, absolute);
+        Assert.Equal(absolute, url);
+        Assert.DoesNotContain("sharepoint.comhttps://", url);
+    }
 }
