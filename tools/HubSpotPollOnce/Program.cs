@@ -7,6 +7,7 @@ using ProjectSync.Acumatica;
 using ProjectSync.HubSpot;
 using ProjectSync.Options;
 using ProjectSync.SharePoint;
+using ProjectSync.Notifications;
 using ProjectSync.State;
 
 // -----------------------------------------------------------------------------
@@ -17,7 +18,8 @@ using ProjectSync.State;
 //   Usage: dotnet run --project tools/HubSpotPollOnce -- [lookbackHours]
 // -----------------------------------------------------------------------------
 
-var lookbackHours = args.Length > 0 && int.TryParse(args[0], out var lh) ? lh : 48;
+var apply = args.Any(a => a.Equals("--apply", StringComparison.OrdinalIgnoreCase));
+var lookbackHours = args.Select(a => int.TryParse(a, out var n) ? n : (int?)null).FirstOrDefault(n => n is not null) ?? 48;
 
 var localSettingsPath = Path.GetFullPath(Path.Combine(
     AppContext.BaseDirectory, "..", "..", "..", "..", "..",
@@ -31,6 +33,7 @@ var configuration = new ConfigurationBuilder()
 var options = new HubSpotOptions();
 configuration.GetSection(HubSpotOptions.SectionName).Bind(options);
 options.FirstRunLookbackHours = lookbackHours; // first run looks back this far so we see real deals
+options.MaxDealsPerPoll = Math.Max(options.MaxDealsPerPoll, 10000); // don't cap a wide backfill sweep
 
 using var loggerFactory = LoggerFactory.Create(b => b
     .SetMinimumLevel(LogLevel.Warning)
@@ -44,26 +47,50 @@ var wrapped = Options.Create(options);
 var tokenProvider = new HubSpotTokenProvider(http, wrapped, loggerFactory.CreateLogger<HubSpotTokenProvider>());
 var client = new HubSpotClient(http, tokenProvider, wrapped, loggerFactory.CreateLogger<HubSpotClient>());
 var store = new InMemoryLastRunStore();
-var processor = new HubSpotScopingProcessor(client, new NoOpSharePoint(), store, wrapped, TimeProvider.System, loggerFactory.CreateLogger<HubSpotScopingProcessor>());
 
-Console.WriteLine($"=== HubSpot scoping poll (DRY RUN, lookback {lookbackHours}h) ===");
+// SharePoint: a real (idempotent) service only when --apply — it skips deals that already have a room.
+// Emails go through the LoggingEmailSender so a backfill never mails real recipients.
+ISharePointDocumentSetService sp;
+if (apply)
+{
+    var spOptions = Bind<SharePointOptions>(configuration, SharePointOptions.SectionName);
+    var ctxFactory = new SharePointContextFactory(spOptions, loggerFactory.CreateLogger<SharePointContextFactory>());
+    var uploads = new GraphUploadLinkService(ctxFactory, spOptions, loggerFactory.CreateLogger<GraphUploadLinkService>());
+    var notifier = new WorkspaceNotifier(
+        new LoggingEmailSender(loggerFactory.CreateLogger<LoggingEmailSender>()),
+        Bind<NotificationOptions>(configuration, NotificationOptions.SectionName),
+        loggerFactory.CreateLogger<WorkspaceNotifier>());
+    sp = new SharePointDocumentSetService(ctxFactory, uploads, notifier, spOptions, loggerFactory.CreateLogger<SharePointDocumentSetService>());
+}
+else
+{
+    sp = new NoOpSharePoint();
+}
+
+var processor = new HubSpotScopingProcessor(client, sp, store, wrapped, TimeProvider.System, loggerFactory.CreateLogger<HubSpotScopingProcessor>());
+
+Console.WriteLine($"=== HubSpot scoping poll ({(apply ? "APPLY — writes to SharePoint" : "DRY RUN")}, lookback {lookbackHours}h) ===");
 Console.WriteLine($"Practice scope : {(options.IncludedPractices.Count == 0 ? "<all>" : string.Join(", ", options.IncludedPractices))}");
-Console.WriteLine($"Excluding stages: {string.Join(", ", options.TerminalStageIds)} (Won/Lost)");
+Console.WriteLine($"Excluding stages: {string.Join(", ", options.TerminalStageIds)}");
 Console.WriteLine();
 
-var result = await processor.RunAsync(dryRun: true, CancellationToken.None);
+var result = await processor.RunAsync(dryRun: !apply, CancellationToken.None);
 
 Console.WriteLine($"Modified in window: {result.Found} | In-scope scoping deals: {result.InScope}");
+if (apply) Console.WriteLine($"CREATED (were missing): {result.Created} | already existed: {result.Updated}");
 Console.WriteLine();
-Console.WriteLine("Scoping workspaces that WOULD be created/updated:");
+Console.WriteLine(apply ? "Scoping workspaces processed:" : "Scoping workspaces that WOULD be created/updated:");
 Console.WriteLine($"  {"Deal Id",-13} {"Customer",-26} {"Project name",-34} {"Owner",-28}");
 foreach (var p in result.Plan.OrderBy(p => p.CustomerName))
 {
     Console.WriteLine($"  {p.DealId,-13} {Trunc(p.CustomerName, 26),-26} {Trunc(p.ProjectName, 34),-34} {p.OwnerEmail ?? "<none>",-28}");
 }
 Console.WriteLine();
-Console.WriteLine($"✅ {result.Plan.Count} scoping workspace(s) planned. (Folder name would be first 10 of Customer + \" (dealId)\".)");
+Console.WriteLine($"✅ {result.Plan.Count} scoping workspace(s) {(apply ? "processed" : "planned")}.");
 return 0;
+
+static IOptions<T> Bind<T>(IConfiguration c, string s) where T : class, new()
+{ var v = new T(); c.GetSection(s).Bind(v); return Options.Create(v); }
 
 static string Trunc(string? s, int max) => string.IsNullOrEmpty(s) ? "" : (s.Length <= max ? s : s[..(max - 1)] + "…");
 

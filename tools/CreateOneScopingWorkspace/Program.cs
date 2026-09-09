@@ -57,13 +57,13 @@ var sharePoint = new SharePointDocumentSetService(contextFactory, uploadLinks, n
 Console.WriteLine($"=== Create ONE scoping workspace: deal {dealId} ===");
 Console.WriteLine();
 
-// Find the deal (wide window) and resolve the same way the processor does.
-var deals = await hubspot.GetDealsModifiedAfterAsync(DateTimeOffset.UtcNow.AddYears(-5), maxResults: 10000, CancellationToken.None);
-var deal = deals.FirstOrDefault(d => d.DealId == dealId);
+// Fetch the deal directly by id (batch-read) — ignores the pipeline/terminal/modified filters, so this
+// works for a Won/Lost deal too. That's exactly what a targeted backfill needs.
+var byId = await hubspot.GetDealsByIdAsync(new[] { dealId }, CancellationToken.None);
+var deal = byId.FirstOrDefault();
 if (deal is null)
 {
-    Console.Error.WriteLine($"❌ Deal '{dealId}' not found (in scope: pipeline/terminal/modified filters). " +
-        "It may be Won/Lost or outside the configured pipelines.");
+    Console.Error.WriteLine($"❌ Deal '{dealId}' not found in HubSpot.");
     return 2;
 }
 
