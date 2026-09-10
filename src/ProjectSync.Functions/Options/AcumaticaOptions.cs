@@ -90,6 +90,22 @@ public sealed class AcumaticaOptions
     public string TeamEmailField { get; set; } = "EmployeeEmail";
     public string TeamModifiedField { get; set; } = "LastModifiedDateTime";
 
+    /// <summary>
+    /// Optional team-GI field carrying the employee's status/active flag. When set, a team member whose
+    /// value matches one of <see cref="TeamExcludedStatuses"/> is dropped from the team — never resolved
+    /// or granted (avoids EnsureUser failures for disabled/terminated employees). Requires the GI to expose
+    /// the field. Blank = no status filtering.
+    /// </summary>
+    public string TeamStatusField { get; set; } = string.Empty;
+
+    /// <summary>Status values (from <see cref="TeamStatusField"/>) that mean "don't use this employee",
+    /// e.g. Inactive/Terminated, or "false" if the field is an Active boolean. Case-insensitive.</summary>
+    public List<string> TeamExcludedStatuses { get; set; } = new();
+
+    /// <summary>Explicit team-member emails to always skip (e.g. known disabled accounts), regardless of
+    /// status field. Case-insensitive. A stopgap when the GI doesn't expose a status field.</summary>
+    public List<string> ExcludedTeamEmails { get; set; } = new();
+
     /// <summary>Http timeout for Acumatica calls, seconds.</summary>
     public int TimeoutSeconds { get; set; } = 100;
 

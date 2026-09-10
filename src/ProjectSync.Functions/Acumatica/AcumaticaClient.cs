@@ -161,9 +161,9 @@ public sealed class AcumaticaClient : IAcumaticaClient
             }
 
             var email = GetString(row, _options.TeamEmailField)?.Trim();
-            if (!string.IsNullOrWhiteSpace(email))
+            if (!string.IsNullOrWhiteSpace(email) && !IsExcludedTeamMember(row, email!))
             {
-                emails.Add(email);
+                emails.Add(email!);
             }
         }
 
@@ -205,7 +205,7 @@ public sealed class AcumaticaClient : IAcumaticaClient
         {
             var pid = GetString(row, _options.TeamProjectIdField)?.Trim();
             var email = GetString(row, _options.TeamEmailField)?.Trim();
-            if (string.IsNullOrWhiteSpace(pid) || string.IsNullOrWhiteSpace(email))
+            if (string.IsNullOrWhiteSpace(pid) || string.IsNullOrWhiteSpace(email) || IsExcludedTeamMember(row, email!))
             {
                 continue;
             }
@@ -214,6 +214,33 @@ public sealed class AcumaticaClient : IAcumaticaClient
         }
 
         return rows;
+    }
+
+    /// <summary>
+    /// True when a team member should be skipped: their email is in <c>ExcludedTeamEmails</c>, or the GI's
+    /// <c>TeamStatusField</c> value is one of <c>TeamExcludedStatuses</c> (e.g. a disabled/terminated
+    /// employee). Fail-open: an absent/blank status field never excludes on its own.
+    /// </summary>
+    private bool IsExcludedTeamMember(JsonElement row, string email)
+    {
+        if (_options.ExcludedTeamEmails.Any(x => string.Equals(x?.Trim(), email, StringComparison.OrdinalIgnoreCase)))
+        {
+            _logger.LogInformation("Skipping excluded team member {Email} (ExcludedTeamEmails).", email);
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_options.TeamStatusField) && _options.TeamExcludedStatuses.Count > 0)
+        {
+            var status = GetString(row, _options.TeamStatusField)?.Trim();
+            if (!string.IsNullOrWhiteSpace(status) &&
+                _options.TeamExcludedStatuses.Any(s => string.Equals(s?.Trim(), status, StringComparison.OrdinalIgnoreCase)))
+            {
+                _logger.LogInformation("Skipping team member {Email}: status '{Status}' is excluded.", email, status);
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static string? GetString(JsonElement row, string property)
