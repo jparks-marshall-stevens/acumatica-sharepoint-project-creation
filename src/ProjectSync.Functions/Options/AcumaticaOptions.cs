@@ -59,6 +59,13 @@ public sealed class AcumaticaOptions
     /// </summary>
     public string ProjectManagerEmailField { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Optional GI column holding the principal in charge's email/UPN. The practice leader is left out of
+    /// workspace emails unless they're the PM or this PIC. Blank = no PIC check. The GI doesn't expose a PIC
+    /// yet (2026-09-28).
+    /// </summary>
+    public string PrincipalInChargeField { get; set; } = string.Empty;
+
     public string PracticeField { get; set; } = "Practice";
 
     /// <summary>

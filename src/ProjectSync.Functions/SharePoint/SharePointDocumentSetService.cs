@@ -55,7 +55,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         {
             _logger.LogInformation("Document set for project {ProjectId} already exists at {Url}; updating metadata + permissions.",
                 project.ProjectId, existing);
-            var sig = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail, destination.AdminEmails);
+            var sig = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail, destination.AdminEmails, destination.MembersPermissionLevel);
             await ApplyMetadataAsync(ctx, existing, project, sig, siteUrl, cancellationToken);
             var addedExisting = await ApplyPermissionsAsync(ctx, existing, project, destination, cancellationToken);
             await NotifyProjectAccessAddedAsync(ctx, project, destination, existing, siteUrl, addedExisting, cancellationToken);
@@ -118,7 +118,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         await ctx.ExecuteQueryRetryAsync();
 
         var serverRelativeUrl = created.Value;
-        var newSig = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail, destination.AdminEmails);
+        var newSig = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail, destination.AdminEmails, destination.MembersPermissionLevel);
         await ApplyMetadataAsync(ctx, serverRelativeUrl, project, newSig, siteUrl, cancellationToken);
         await ApplyPermissionsAsync(ctx, serverRelativeUrl, project, destination, cancellationToken);
 
@@ -133,7 +133,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         await _notifier.NotifyCreatedAsync(
             ProjectNotice(project, destination, siteUrl, serverRelativeUrl, uploadLink),
             ProjectRecipients(project, destination),
-            destination.PracticeLeaderEmail,
+            WorkspaceNotifier.LeaderToExclude(destination.PracticeLeaderEmail, ProjectLeadPeople(project)),
             cancellationToken);
 
         return new DocumentSetResult(Created: true, serverRelativeUrl,
@@ -186,7 +186,8 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
             {
                 await _notifier.NotifyAccessAddedAsync(
                     ScopingNotice(workspace, destination, siteUrl, url, await ReadUploadLinkAsync(ctx, url)),
-                    addedScoping, destination.PracticeLeaderEmail, cancellationToken);
+                    addedScoping, WorkspaceNotifier.LeaderToExclude(destination.PracticeLeaderEmail, ScopingLeadPeople(workspace)),
+                    cancellationToken);
             }
             return new DocumentSetResult(Created: false, url);
         }
@@ -225,7 +226,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         await _notifier.NotifyCreatedAsync(
             ScopingNotice(workspace, destination, siteUrl, serverRelativeUrl, scopingUploadLink),
             ScopingRecipients(workspace, destination),
-            destination.PracticeLeaderEmail,
+            WorkspaceNotifier.LeaderToExclude(destination.PracticeLeaderEmail, ScopingLeadPeople(workspace)),
             cancellationToken);
 
         return new DocumentSetResult(Created: true, serverRelativeUrl);
@@ -246,11 +247,34 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
 
     // ----- Notification helpers -----
 
+    // The roles that mean the practice leader is running this engagement themselves: PM or principal in
+    // charge for a project, deal owner or PM for a scoping deal. A leader in one of those roles gets the
+    // emails; a leader who's only on the team, an originator, or on the room because they lead the
+    // practice is left out.
+    private static IEnumerable<string?> ProjectLeadPeople(AcumaticaProject project)
+    {
+        yield return project.ProjectManagerEmail;
+        yield return project.PrincipalInChargeEmail;
+    }
+
+    private static IEnumerable<string?> ScopingLeadPeople(ScopingWorkspace ws)
+    {
+        yield return ws.OwnerEmail;
+        yield return ws.ProjectManagerEmail;
+    }
+
     private static IEnumerable<string?> ProjectRecipients(AcumaticaProject project, PracticeMappingEntry destination)
     {
         yield return project.ProjectManagerEmail;
         foreach (var e in project.TeamEmails) yield return e;
         foreach (var e in destination.AdminEmails) yield return e;
+        // The PIC is included only so a leader who is PIC isn't lost: a non-leader PIC who isn't also PM or
+        // team never had room access, so they aren't emailed.
+        if (!string.IsNullOrWhiteSpace(destination.PracticeLeaderEmail)
+            && string.Equals(project.PrincipalInChargeEmail?.Trim(), destination.PracticeLeaderEmail.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            yield return project.PrincipalInChargeEmail;
+        }
     }
 
     private static IEnumerable<string?> ScopingRecipients(ScopingWorkspace ws, PracticeMappingEntry destination)
@@ -261,6 +285,15 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         yield return ws.OriginatorBEmail;
         foreach (var e in destination.AdminEmails) yield return e;
     }
+
+    // Email of a People column value (or a plain-text column that holds an address).
+    private static string? PersonEmail(ListItem item, string column)
+        => item.FieldValues.TryGetValue(column, out var v) ? v switch
+        {
+            FieldUserValue u => u.Email,
+            string text when text.Contains('@') => text,
+            _ => null,
+        } : null;
 
     /// <summary>The practice label to show people: the destination's DisplayName override, else the raw value.</summary>
     private static string? PracticeLabel(PracticeMappingEntry destination, string? rawPractice)
@@ -325,7 +358,8 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         var uploadLink = await ReadUploadLinkAsync(ctx, serverRelativeUrl);
         await _notifier.NotifyAccessAddedAsync(
             ProjectNotice(project, destination, siteUrl, serverRelativeUrl, uploadLink),
-            newlyAdded, destination.PracticeLeaderEmail, cancellationToken);
+            newlyAdded, WorkspaceNotifier.LeaderToExclude(destination.PracticeLeaderEmail, ProjectLeadPeople(project)),
+            cancellationToken);
     }
 
     // Delegates to the tested helper. DocumentSet.Create (and some other CSOM calls) can hand back an
@@ -416,7 +450,8 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
                     ctx.Load(item,
                         i => i[_options.CustomerNameColumn], i => i[_options.ProjectNameColumn],
                         i => i[_options.ProjectIdColumn], i => i[_options.OpportunityIdColumn],
-                        i => i[_options.StatusColumn], i => i[_options.ClientUploadLinkColumn]);
+                        i => i[_options.StatusColumn], i => i[_options.ClientUploadLinkColumn],
+                        i => i[_options.ProjectManagerColumn]);
                     ctx.Load(item.RoleAssignments, r => r.Include(a => a.Member.PrincipalType, a => a.Member.LoginName));
                     await ctx.ExecuteQueryRetryAsync();
 
@@ -425,8 +460,11 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
                     var isScoping = string.Equals(status, _options.ScopingStatusValue, StringComparison.OrdinalIgnoreCase);
 
                     var recipients = GranteeEmails(item.RoleAssignments);
-                    // Keep the practice leader for scoping rooms; drop for engagements (not delivering work).
-                    var exclude = isScoping ? null : mapping.PracticeLeaderEmail;
+                    // Keep the practice leader for scoping rooms; drop for engagements (not delivering work)
+                    // unless they're the engagement's PM. The PIC isn't stored on the item, so a leader who
+                    // is only the PIC is still dropped from upload emails.
+                    var exclude = isScoping ? null
+                        : WorkspaceNotifier.LeaderToExclude(mapping.PracticeLeaderEmail, new[] { PersonEmail(item, _options.ProjectManagerColumn) });
 
                     var notice = new WorkspaceNotice
                     {
@@ -544,7 +582,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
                 var urlMissing = string.IsNullOrWhiteSpace(t.DataroomUrl);
                 var urlDrifted = !urlMissing && !string.Equals(t.DataroomUrl, currentUrl, StringComparison.OrdinalIgnoreCase);
 
-                var desiredSig = ReconcileSignature.Compute(x.Project, x.Dest.PracticeLeaderEmail, x.Dest.AdminEmails);
+                var desiredSig = ReconcileSignature.Compute(x.Project, x.Dest.PracticeLeaderEmail, x.Dest.AdminEmails, x.Dest.MembersPermissionLevel);
                 var sigChanged = !string.Equals(desiredSig, t.Signature, StringComparison.OrdinalIgnoreCase);
 
                 if (sigChanged)
@@ -790,7 +828,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         var url = await TryRenameDocumentSetAsync(ctx, scopingUrl, desiredName, project.ProjectId, cancellationToken);
         var promoteSite = string.IsNullOrWhiteSpace(destination.SiteUrl) ? _options.SiteUrl : destination.SiteUrl!;
 
-        var signature = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail, destination.AdminEmails);
+        var signature = ReconcileSignature.Compute(project, destination.PracticeLeaderEmail, destination.AdminEmails, destination.MembersPermissionLevel);
         await ApplyMetadataAsync(ctx, url, project, signature, promoteSite, cancellationToken);
 
         // Authoritative reset: the scoping grantees (the deal owner) give way to the delivery team.
@@ -965,7 +1003,8 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         var identities = new List<string?> { pmIdentity, destination.PracticeLeaderEmail };
         identities.AddRange(project.TeamEmails);
         identities.AddRange(destination.AdminEmails);
-        return ApplyPermissionsCoreAsync(ctx, serverRelativeUrl, identities, $"project {project.ProjectId}", cancellationToken);
+        return ApplyPermissionsCoreAsync(ctx, serverRelativeUrl, identities, destination.MembersPermissionLevel,
+            $"project {project.ProjectId}", cancellationToken);
     }
 
     /// <summary>
@@ -980,7 +1019,8 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
     /// list when permissions are disabled or on any failure (so callers never notify on a partial state).
     /// </summary>
     private async Task<IReadOnlyList<string>> ApplyPermissionsCoreAsync(
-        ClientContext ctx, string serverRelativeUrl, IReadOnlyList<string?> granteeIdentities, string logContext, CancellationToken cancellationToken)
+        ClientContext ctx, string serverRelativeUrl, IReadOnlyList<string?> granteeIdentities, string? membersLevel,
+        string logContext, CancellationToken cancellationToken)
     {
         if (!_options.SetProjectPermissions)
         {
@@ -998,6 +1038,13 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
             ctx.Load(grantRole);
             ctx.Load(fullControl);
             ctx.Load(web.AssociatedOwnerGroup);
+            RoleDefinition? membersRole = null;
+            if (!string.IsNullOrWhiteSpace(membersLevel))
+            {
+                membersRole = web.RoleDefinitions.GetByName(membersLevel.Trim());
+                ctx.Load(membersRole);
+                ctx.Load(web.AssociatedMemberGroup);
+            }
             // Who is assigned BEFORE this run, so we can tell which grantees are new.
             ctx.Load(item.RoleAssignments, r => r.Include(a => a.PrincipalId));
             await ctx.ExecuteQueryRetryAsync();
@@ -1043,10 +1090,19 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
                 item.RoleAssignments.Add(user, binding);
             }
 
+            // Practice-wide access: the site Members group (a group, so it's never in the "newly added" emails).
+            if (membersRole is not null)
+            {
+                var membersBinding = new RoleDefinitionBindingCollection(ctx);
+                membersBinding.Add(membersRole);
+                item.RoleAssignments.Add(web.AssociatedMemberGroup, membersBinding);
+            }
+
             await ctx.ExecuteQueryRetryAsync();
             _logger.LogInformation(
-                "Set permissions on {Context}: {Count} user(s) at {Level} + Owners FullControl ({New} newly added).",
-                logContext, grantees.Count, _options.PermissionLevel, newlyAdded.Count);
+                "Set permissions on {Context}: {Count} user(s) at {Level} + Owners FullControl{Members} ({New} newly added).",
+                logContext, grantees.Count, _options.PermissionLevel,
+                membersRole is null ? "" : $" + Members {membersLevel}", newlyAdded.Count);
             return newlyAdded;
         }
         catch (Exception ex)
@@ -1149,7 +1205,8 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
             destination.PracticeLeaderEmail,
         };
         identities.AddRange(destination.AdminEmails);
-        return ApplyPermissionsCoreAsync(ctx, serverRelativeUrl, identities, $"deal {ws.DealId}", cancellationToken);
+        return ApplyPermissionsCoreAsync(ctx, serverRelativeUrl, identities, destination.MembersPermissionLevel,
+            $"deal {ws.DealId}", cancellationToken);
     }
 
     /// <summary>Ensures a visible text column exists on the library, creating it if missing.</summary>

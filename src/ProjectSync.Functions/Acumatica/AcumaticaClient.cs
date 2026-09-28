@@ -91,6 +91,9 @@ public sealed class AcumaticaClient : IAcumaticaClient
                 ProjectManagerEmail = string.IsNullOrEmpty(_options.ProjectManagerEmailField)
                     ? null
                     : GetString(row, _options.ProjectManagerEmailField),
+                PrincipalInChargeEmail = string.IsNullOrEmpty(_options.PrincipalInChargeField)
+                    ? null
+                    : GetString(row, _options.PrincipalInChargeField),
                 Practice = GetString(row, _options.PracticeField),
                 HubSpotLink = string.IsNullOrEmpty(_options.HubSpotLinkField)
                     ? null

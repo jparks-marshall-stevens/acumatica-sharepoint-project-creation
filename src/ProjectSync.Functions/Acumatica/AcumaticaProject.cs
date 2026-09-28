@@ -11,6 +11,10 @@ public sealed record AcumaticaProject
     /// <summary>Project manager's email/UPN, used to resolve a SharePoint People field. Optional.</summary>
     public string? ProjectManagerEmail { get; init; }
 
+    /// <summary>Principal in charge's email/UPN (Acumatica:PrincipalInChargeField). Optional; used only so a
+    /// practice leader who is the PIC still gets the workspace emails.</summary>
+    public string? PrincipalInChargeEmail { get; init; }
+
     public string? Practice { get; init; }
 
     /// <summary>

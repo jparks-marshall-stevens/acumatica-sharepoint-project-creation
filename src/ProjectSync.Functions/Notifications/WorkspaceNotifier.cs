@@ -46,6 +46,22 @@ public sealed class WorkspaceNotifier
         => SendAsync(() => WorkspaceEmail.BuildClientUpload(notice, fileNames, uploadsFolderUrl, _options.LogoUrl),
             recipients, excludeEmail, "client-upload", notice, cancellationToken);
 
+    /// <summary>
+    /// The address to leave out of a workspace email: the practice leader, unless the leader is personally
+    /// named on the engagement (PM, team member, deal owner, originator). Then it's their own work and they
+    /// get the email like anyone else. Returns null when nobody should be excluded.
+    /// </summary>
+    public static string? LeaderToExclude(string? leaderEmail, IEnumerable<string?> namedPeople)
+    {
+        var leader = leaderEmail?.Trim();
+        if (string.IsNullOrEmpty(leader))
+        {
+            return null;
+        }
+
+        return namedPeople.Any(p => leader.Equals(p?.Trim(), StringComparison.OrdinalIgnoreCase)) ? null : leader;
+    }
+
     private async Task SendAsync(
         Func<(string Subject, string Html)> build,
         IEnumerable<string?> recipients,

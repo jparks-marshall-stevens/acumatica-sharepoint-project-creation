@@ -175,6 +175,13 @@ public sealed class PracticeMappingEntry
     /// </summary>
     public List<string> AdminEmails { get; set; } = new();
 
+    /// <summary>
+    /// Optional permission level (e.g. "Edit") granted to the site's <b>Members</b> group on every document
+    /// set for this practice, scoping and execution. Use it when the whole practice works every engagement,
+    /// so access is managed by M365 group membership. Blank = Members get nothing on rooms (the default).
+    /// </summary>
+    public string? MembersPermissionLevel { get; set; }
+
     /// <summary>Optional site override. If null/empty, <see cref="SharePointOptions.SiteUrl"/> is used.</summary>
     public string? SiteUrl { get; set; }
 

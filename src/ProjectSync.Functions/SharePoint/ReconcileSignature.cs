@@ -30,7 +30,8 @@ public static class ReconcileSignature
     }
 
     /// <summary>Hash of the metadata + grantee set (hex; fits a single-line text column).</summary>
-    public static string Compute(AcumaticaProject project, string? leaderEmail, IEnumerable<string>? adminEmails = null)
+    public static string Compute(AcumaticaProject project, string? leaderEmail, IEnumerable<string>? adminEmails = null,
+        string? membersPermissionLevel = null)
     {
         var pmEmail = (string.IsNullOrWhiteSpace(project.ProjectManagerEmail) ? project.ProjectManager : project.ProjectManagerEmail)
             ?.Trim().ToLowerInvariant() ?? string.Empty;
@@ -42,6 +43,11 @@ public static class ReconcileSignature
             pmEmail,
         };
         parts.AddRange(GranteeEmails(project, leaderEmail, adminEmails));
+        // Only when set, so practices without a Members grant keep their existing signatures (no re-sync).
+        if (!string.IsNullOrWhiteSpace(membersPermissionLevel))
+        {
+            parts.Add("members:" + membersPermissionLevel.Trim().ToLowerInvariant());
+        }
 
         var payload = string.Join(Delimiter, parts);
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(payload));

@@ -16,6 +16,10 @@ using System.Text.Json;
 // wait for each folder to re-sync. It is ADDITIVE — it grants the admin the configured PermissionLevel
 // and touches nothing else about a folder's access. Re-runnable and idempotent.
 //
+// It also applies a practice's MembersPermissionLevel: grants the site Members group that level on every
+// document set AND on its "Client Uploads" subfolder. That subfolder got its own permissions when its
+// upload link was created, so a Members grant on the room doesn't reach it.
+//
 //   dotnet run --project tools/ApplyPracticeAdmins              → dry run (default; writes nothing)
 //   dotnet run --project tools/ApplyPracticeAdmins -- --apply   → grant access
 // -----------------------------------------------------------------------------
@@ -46,7 +50,7 @@ Console.WriteLine();
 
 // Group practices by (site, library) so each library is swept once even if several practices share it.
 var groups = sp.PracticeMappings
-    .Where(m => m.AdminEmails is { Count: > 0 })
+    .Where(m => m.AdminEmails is { Count: > 0 } || !string.IsNullOrWhiteSpace(m.MembersPermissionLevel))
     .GroupBy(m => (
         Site: string.IsNullOrWhiteSpace(m.SiteUrl) ? sp.SiteUrl : m.SiteUrl!,
         m.Library))
@@ -54,7 +58,7 @@ var groups = sp.PracticeMappings
 
 if (groups.Count == 0)
 {
-    Console.WriteLine("No practice mapping has AdminEmails configured. Nothing to do.");
+    Console.WriteLine("No practice mapping has AdminEmails or MembersPermissionLevel configured. Nothing to do.");
     return 0;
 }
 
@@ -74,6 +78,8 @@ foreach (var group in groups)
     Console.WriteLine($"Library : {group.Key.Library}");
     Console.WriteLine($"Admins  : {string.Join(", ", admins)}");
     Console.WriteLine($"Level   : {sp.PermissionLevel}");
+    var membersLevel = group.Select(m => m.MembersPermissionLevel?.Trim()).FirstOrDefault(l => !string.IsNullOrEmpty(l));
+    Console.WriteLine($"Members : {membersLevel ?? "(not granted)"}");
     Console.WriteLine();
 
     using var ctx = await contextFactory.CreateContextAsync(group.Key.Site);
@@ -81,7 +87,15 @@ foreach (var group in groups)
     var role = ctx.Web.RoleDefinitions.GetByName(sp.PermissionLevel);
     ctx.Load(list, l => l.RootFolder.ServerRelativeUrl);
     ctx.Load(role, r => r.Id, r => r.Name);
+    RoleDefinition? membersRole = null;
+    if (membersLevel is not null)
+    {
+        membersRole = ctx.Web.RoleDefinitions.GetByName(membersLevel);
+        ctx.Load(membersRole, r => r.Id, r => r.Name);
+        ctx.Load(ctx.Web.AssociatedMemberGroup, g => g.Id, g => g.Title);
+    }
     await ctx.ExecuteQueryRetryAsync();
+    var membersGroup = membersRole is null ? null : ctx.Web.AssociatedMemberGroup;
 
     // Resolve each admin to a site user once (fail-soft: an unresolvable email is reported and skipped).
     var adminUsers = new List<User>();
@@ -101,7 +115,7 @@ foreach (var group in groups)
         }
     }
 
-    if (adminUsers.Count == 0)
+    if (adminUsers.Count == 0 && membersGroup is null)
     {
         Console.WriteLine("  No resolvable admins for this library; skipping.");
         Console.WriteLine();
@@ -152,20 +166,40 @@ foreach (var group in groups)
         {
             var item = ctx.Web.GetFolderByServerRelativeUrl(url).ListItemAllFields;
             ctx.Load(item, i => i.HasUniqueRoleAssignments,
-                i => i.RoleAssignments.Include(ra => ra.PrincipalId));
+                i => i.RoleAssignments.Include(ra => ra.PrincipalId, ra => ra.RoleDefinitionBindings.Include(d => d.Id)));
             await ctx.ExecuteQueryRetryAsync();
 
-            var present = item.RoleAssignments.Select(ra => ra.PrincipalId).ToHashSet();
-            var missing = adminUsers.Where(u => !present.Contains(u.Id)).ToList();
+            var missing = adminUsers.Where(u => !item.RoleAssignments.Any(ra => ra.PrincipalId == u.Id)).ToList();
+            var needsMembers = membersGroup is not null && !HasRole(item, membersGroup.Id, membersRole!.Id);
 
-            if (missing.Count == 0)
+            // The Client Uploads subfolder, when it has its own permissions (it does once a link exists).
+            ListItem? uploads = null;
+            var uploadsNeedsMembers = false;
+            if (membersGroup is not null)
+            {
+                var uploadsFolder = ctx.Web.GetFolderByServerRelativeUrl($"{url.TrimEnd('/')}/{sp.ClientUploadsFolderName}");
+                ctx.Load(uploadsFolder, f => f.Exists);
+                await ctx.ExecuteQueryRetryAsync();
+                if (uploadsFolder.Exists)
+                {
+                    uploads = uploadsFolder.ListItemAllFields;
+                    ctx.Load(uploads, i => i.HasUniqueRoleAssignments,
+                        i => i.RoleAssignments.Include(ra => ra.PrincipalId, ra => ra.RoleDefinitionBindings.Include(d => d.Id)));
+                    await ctx.ExecuteQueryRetryAsync();
+                    uploadsNeedsMembers = uploads.HasUniqueRoleAssignments && !HasRole(uploads, membersGroup.Id, membersRole!.Id);
+                }
+            }
+
+            if (missing.Count == 0 && !needsMembers && !uploadsNeedsMembers)
             {
                 totalAlready++;
                 continue;
             }
 
-            var who = string.Join(", ", missing.Select(u => u.Title));
-            Console.WriteLine($"    {(apply ? "grant" : "would grant")} [{who}] on {url}");
+            var what = missing.Select(u => u.Title).ToList();
+            if (needsMembers) what.Add($"{membersGroup!.Title} ({membersLevel})");
+            if (uploadsNeedsMembers) what.Add($"{membersGroup!.Title} ({membersLevel}) on Client Uploads");
+            Console.WriteLine($"    {(apply ? "grant" : "would grant")} [{string.Join(", ", what)}] on {url}");
 
             if (apply)
             {
@@ -180,6 +214,16 @@ foreach (var group in groups)
                 {
                     var binding = new RoleDefinitionBindingCollection(ctx) { role };
                     item.RoleAssignments.Add(u, binding);
+                }
+
+                if (needsMembers)
+                {
+                    item.RoleAssignments.Add(membersGroup!, new RoleDefinitionBindingCollection(ctx) { membersRole! });
+                }
+
+                if (uploadsNeedsMembers)
+                {
+                    uploads!.RoleAssignments.Add(membersGroup!, new RoleDefinitionBindingCollection(ctx) { membersRole! });
                 }
 
                 await ctx.ExecuteQueryRetryAsync();
@@ -204,6 +248,9 @@ if (!apply)
 }
 
 return totalFailed > 0 ? 1 : 0;
+
+static bool HasRole(ListItem item, int principalId, int roleId)
+    => item.RoleAssignments.Any(ra => ra.PrincipalId == principalId && ra.RoleDefinitionBindings.Any(d => d.Id == roleId));
 
 static IOptions<T> Bind<T>(IConfiguration config, string section) where T : class, new()
 {

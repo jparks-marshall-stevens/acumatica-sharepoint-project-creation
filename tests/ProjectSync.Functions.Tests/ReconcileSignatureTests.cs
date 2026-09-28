@@ -46,4 +46,19 @@ public class ReconcileSignatureTests
 
         Assert.Equal(a, b);
     }
+
+    [Fact]
+    public void NoMembersLevel_KeepsTheExistingSignature() =>
+        Assert.Equal(ReconcileSignature.Compute(Project(), "leader@x.com"),
+            ReconcileSignature.Compute(Project(), "leader@x.com", null, membersPermissionLevel: " "));
+
+    [Fact]
+    public void MembersLevel_ChangesTheSignature_SoExistingRoomsResync()
+    {
+        var baseline = ReconcileSignature.Compute(Project(), "leader@x.com");
+        var edit = ReconcileSignature.Compute(Project(), "leader@x.com", null, "Edit");
+        Assert.NotEqual(baseline, edit);
+        Assert.Equal(edit, ReconcileSignature.Compute(Project(), "leader@x.com", null, " edit "));
+        Assert.NotEqual(edit, ReconcileSignature.Compute(Project(), "leader@x.com", null, "Read"));
+    }
 }

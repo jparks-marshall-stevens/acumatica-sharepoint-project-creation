@@ -181,4 +181,27 @@ public class WorkspaceNotifierTests
         Assert.Contains("Open the dataroom", html);
         Assert.DoesNotContain("Client file-request link", html);
     }
+
+    [Fact]
+    public void LeaderToExclude_LeaderOnlyByPracticeRole_IsExcluded() =>
+        Assert.Equal("leader@x.com", WorkspaceNotifier.LeaderToExclude("leader@x.com", new[] { "pm@x.com", null }));
+
+    [Fact]
+    public void LeaderToExclude_LeaderIsPmOrPic_IsKept() =>
+        Assert.Null(WorkspaceNotifier.LeaderToExclude("Leader@X.com", new[] { "pm@x.com", " leader@x.com " }));
+
+    [Fact]
+    public void LeaderToExclude_NoLeader_ExcludesNobody() =>
+        Assert.Null(WorkspaceNotifier.LeaderToExclude(null, new[] { "pm@x.com" }));
+
+    [Fact]
+    public async Task Created_LeaderWhoIsPm_GetsTheEmail()
+    {
+        var (n, s) = Make();
+        var recipients = new[] { "leader@x.com", "team@x.com" };
+        await n.NotifyCreatedAsync(Notice(), recipients,
+            WorkspaceNotifier.LeaderToExclude("leader@x.com", new[] { "leader@x.com" }), CancellationToken.None);
+
+        Assert.Contains(s.Sent.Single().To, r => r == "leader@x.com");
+    }
 }
