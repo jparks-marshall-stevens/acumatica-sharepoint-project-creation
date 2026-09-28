@@ -53,6 +53,13 @@ Permissions include the **project team** (from the `EPEmployeeContract` team GI)
 > 09:15:00 UTC (04:15 ET), failing those runs and firing the `ProjectSync-Errors` alert. Skipping the
 > hour avoids it without swallowing errors; watermark-gating means nothing is lost. Don't "fix" this
 > back to `*/15` until whatever runs on the ERP at 04:15 ET is identified.
+>
+> The gap only moved the failure to the first run after it: from 2026-08-21 the 10:00 UTC token call
+> hangs instead, and the 10:15 GIs can take 70–100 s. The ERP seems to stay slow from roughly 09:15 to
+> 10:20 UTC. The functions now treat an HttpClient timeout on a run that **started** inside
+> `Acumatica:SlowWindowStartUtc` (`10:00`) + `Acumatica:SlowWindowMinutes` (`25`) as expected. They log
+> a warning with no exception attached and finish, so the alert doesn't fire. Any other error, or a
+> timeout outside the window, still fails the run.
 
 ### Promotion (scoping → execution)
 

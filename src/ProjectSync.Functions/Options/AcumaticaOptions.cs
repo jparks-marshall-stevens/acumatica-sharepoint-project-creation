@@ -110,6 +110,18 @@ public sealed class AcumaticaOptions
     public int TimeoutSeconds { get; set; } = 100;
 
     /// <summary>
+    /// Start (UTC, "HH:mm") of a daily window in which Acumatica is known to hang — a server-side
+    /// scheduled job makes the token endpoint and GIs time out (observed at 10:00 UTC since 2026-08-21,
+    /// 09:15 UTC before that). A run that STARTS inside the window and fails on an HttpClient timeout is
+    /// logged as a warning and completes normally instead of failing (and paging); the next 15-minute run
+    /// picks the work up. Blank = off.
+    /// </summary>
+    public string SlowWindowStartUtc { get; set; } = "10:00";
+
+    /// <summary>Length of <see cref="SlowWindowStartUtc"/>, minutes. Covers the 10:00 and 10:15 runs.</summary>
+    public int SlowWindowMinutes { get; set; } = 25;
+
+    /// <summary>
     /// Optional allow-list of practice values to process (case-insensitive). When empty, all
     /// practices are processed. Projects whose practice is not listed are skipped but still
     /// advance the watermark, so they are not re-read every cycle.
