@@ -20,6 +20,7 @@
     <Project Path="tools/WriteProjectUrlsOnce/WriteProjectUrlsOnce.csproj" />
     <Project Path="tools/SendTestEmail/SendTestEmail.csproj" />
     <Project Path="tools/SendWorkspaceTestEmail/SendWorkspaceTestEmail.csproj" />
+    <Project Path="tools/RenameFolder/RenameFolder.csproj" />
     <Project Path="tools/SharePointConnectivityTest/SharePointConnectivityTest.csproj" />
     <Project Path="tools/SharePointHardening/SharePointHardening.csproj" />
   </Folder>
