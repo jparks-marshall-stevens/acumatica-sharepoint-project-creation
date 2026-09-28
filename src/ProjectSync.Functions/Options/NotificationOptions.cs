@@ -43,6 +43,20 @@ public sealed class NotificationOptions
     /// </summary>
     public bool TestMode { get; set; } = false;
 
-    /// <summary>The sole recipient while <see cref="TestMode"/> is on.</summary>
+    /// <summary>
+    /// The sole recipient while <see cref="TestMode"/> is on, and the redirect target for any practice
+    /// listed in <see cref="SilentPractices"/>.
+    /// </summary>
     public string TestRecipient { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Per-practice version of <see cref="TestMode"/>: notifications for any practice named here are
+    /// redirected to <see cref="TestRecipient"/> only (intended recipients shown in the subject), while
+    /// every other practice emails its real recipients normally. Use it to switch a NEW practice on for
+    /// verification without diverting a live practice's (e.g. Estate &amp; Gift) real emails. Matched
+    /// case-insensitively against the workspace's practice, token-by-token for multi-select (';'-delimited)
+    /// values. An indexed list so it binds from env vars (practice values contain spaces/'&amp;').
+    /// <see cref="TestMode"/> (global) still overrides this when on.
+    /// </summary>
+    public List<string> SilentPractices { get; set; } = new();
 }

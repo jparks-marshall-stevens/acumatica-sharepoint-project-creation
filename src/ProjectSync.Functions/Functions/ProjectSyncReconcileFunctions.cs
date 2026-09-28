@@ -1,5 +1,8 @@
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using ProjectSync.Acumatica;
+using ProjectSync.Options;
 
 namespace ProjectSync.Functions;
 
@@ -12,11 +15,16 @@ namespace ProjectSync.Functions;
 public sealed class ProjectSyncReconcileFunctions
 {
     private readonly ProjectSyncProcessor _processor;
+    private readonly AcumaticaOptions _acumatica;
+    private readonly TimeProvider _time;
     private readonly ILogger<ProjectSyncReconcileFunctions> _logger;
 
-    public ProjectSyncReconcileFunctions(ProjectSyncProcessor processor, ILogger<ProjectSyncReconcileFunctions> logger)
+    public ProjectSyncReconcileFunctions(ProjectSyncProcessor processor, IOptions<AcumaticaOptions> acumatica,
+        TimeProvider time, ILogger<ProjectSyncReconcileFunctions> logger)
     {
         _processor = processor;
+        _acumatica = acumatica.Value;
+        _time = time;
         _logger = logger;
     }
 
@@ -25,11 +33,17 @@ public sealed class ProjectSyncReconcileFunctions
         [TimerTrigger("%ProjectSyncReconcileSchedule%")] TimerInfo timer,
         CancellationToken cancellationToken)
     {
+        var startedUtc = _time.GetUtcNow();
         try
         {
             var result = await _processor.ReconcileIncrementalAsync(cancellationToken);
             _logger.LogInformation("Reconcile (incremental) done: updated {Updated}, unchanged {Unchanged}.",
                 result.Updated, result.Unchanged);
+        }
+        catch (Exception ex) when (AcumaticaSlowWindow.IsExpectedTimeout(ex, startedUtc, _acumatica, cancellationToken))
+        {
+            _logger.LogWarning("Incremental reconcile skipped: Acumatica timed out during its daily slow window ({Message}).",
+                ex.Message);
         }
         catch (Exception ex)
         {
@@ -43,11 +57,17 @@ public sealed class ProjectSyncReconcileFunctions
         [TimerTrigger("%ProjectSyncFullReconcileSchedule%")] TimerInfo timer,
         CancellationToken cancellationToken)
     {
+        var startedUtc = _time.GetUtcNow();
         try
         {
             var result = await _processor.ReconcileFullAsync(cancellationToken);
             _logger.LogInformation("Reconcile (full) done: considered {Considered}, updated {Updated}.",
                 result.Considered, result.Updated);
+        }
+        catch (Exception ex) when (AcumaticaSlowWindow.IsExpectedTimeout(ex, startedUtc, _acumatica, cancellationToken))
+        {
+            _logger.LogWarning("Full reconcile skipped: Acumatica timed out during its daily slow window ({Message}).",
+                ex.Message);
         }
         catch (Exception ex)
         {

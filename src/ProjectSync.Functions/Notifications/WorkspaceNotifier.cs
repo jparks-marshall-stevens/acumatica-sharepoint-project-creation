@@ -77,19 +77,21 @@ public sealed class WorkspaceNotifier
 
             var (subject, html) = build();
 
-            // Test mode: redirect the whole thing to the test recipient so no live person is emailed, and
-            // surface the intended recipients in the subject. This is the rollout safety valve.
+            // Redirect the whole thing to the test recipient so no live person is emailed, and surface the
+            // intended recipients in the subject. Triggered globally by TestMode, or per-practice by
+            // SilentPractices (switch a new practice on for verification without diverting a live one).
             var actualTo = to;
             string? bcc = string.IsNullOrWhiteSpace(_options.BccAddress) ? null : _options.BccAddress.Trim();
-            if (_options.TestMode)
+            var redirectReason = _options.TestMode ? "TEST" : (IsSilentPractice(notice.Practice) ? "SILENT" : null);
+            if (redirectReason is not null)
             {
                 if (string.IsNullOrWhiteSpace(_options.TestRecipient))
                 {
-                    _logger.LogWarning("TestMode is on but TestRecipient is blank; not sending {Kind} for {Customer}.", kind, notice.CustomerName);
+                    _logger.LogWarning("{Reason} redirect is on but TestRecipient is blank; not sending {Kind} for {Customer}.", redirectReason, kind, notice.CustomerName);
                     return;
                 }
 
-                subject = $"[TEST] {subject}  (intended: {string.Join(", ", to)})";
+                subject = $"[{redirectReason}] {subject}  (intended: {string.Join(", ", to)})";
                 actualTo = new List<string> { _options.TestRecipient.Trim() };
                 bcc = null;
             }
@@ -107,5 +109,24 @@ public sealed class WorkspaceNotifier
         {
             _logger.LogWarning(ex, "Failed to send {Kind} notification for {Customer}; continuing.", kind, notice.CustomerName);
         }
+    }
+
+    /// <summary>
+    /// True when the workspace's practice is in <see cref="NotificationOptions.SilentPractices"/> — its
+    /// emails should be redirected to the test recipient. A HubSpot practice can be a ';'-delimited
+    /// multi-select, so match if the whole value or ANY of its tokens matches a configured entry.
+    /// </summary>
+    private bool IsSilentPractice(string? practice)
+    {
+        if (_options.SilentPractices is not { Count: > 0 } || string.IsNullOrWhiteSpace(practice))
+        {
+            return false;
+        }
+
+        var tokens = practice.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return _options.SilentPractices.Any(sp =>
+            !string.IsNullOrWhiteSpace(sp) &&
+            (string.Equals(sp.Trim(), practice.Trim(), StringComparison.OrdinalIgnoreCase) ||
+             tokens.Any(t => string.Equals(sp.Trim(), t, StringComparison.OrdinalIgnoreCase))));
     }
 }

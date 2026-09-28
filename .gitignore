@@ -7,6 +7,9 @@ out/
 local.settings.json
 .azurefunctions/
 
+# Bootstrap transcript (tools/ProvisionPracticeSite)
+bootstrap.log
+
 # User-specific / IDE
 .vs/
 .vscode/

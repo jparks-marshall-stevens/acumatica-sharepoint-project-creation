@@ -84,6 +84,67 @@ public class WorkspaceNotifierTests
     }
 
     [Fact]
+    public async Task SilentPractice_RedirectsToTestRecipient_AndTagsSubject()
+    {
+        var (n, s) = Make(new NotificationOptions
+        {
+            Enabled = true,
+            BccAddress = "bcc@x.com",
+            TestRecipient = "verifier@x.com",
+            SilentPractices = new List<string> { "Marital Dissolution" },
+        });
+
+        var silent = Notice() with { Practice = "Marital Dissolution" };
+        await n.NotifyCreatedAsync(silent, new[] { "pm@x.com", "team@x.com" }, "leader@x.com", CancellationToken.None);
+
+        var msg = Assert.Single(s.Sent);
+        Assert.Equal(new[] { "verifier@x.com" }, msg.To);      // redirected to the sole test recipient
+        Assert.Null(msg.Bcc);                                   // bcc dropped on redirect
+        Assert.StartsWith("[SILENT]", msg.Subject);
+        Assert.Contains("intended: pm@x.com, team@x.com", msg.Subject);
+    }
+
+    [Fact]
+    public async Task NonSilentPractice_EmailsRealRecipients_WhileAnotherIsSilent()
+    {
+        var (n, s) = Make(new NotificationOptions
+        {
+            Enabled = true,
+            BccAddress = "bcc@x.com",
+            TestRecipient = "verifier@x.com",
+            SilentPractices = new List<string> { "Marital Dissolution" },
+        });
+
+        // Estate & Gift is NOT in the silent list -> real recipients, real bcc, no [SILENT] tag.
+        await n.NotifyCreatedAsync(Notice(), new[] { "pm@x.com", "team@x.com" }, "leader@x.com", CancellationToken.None);
+
+        var msg = Assert.Single(s.Sent);
+        Assert.Equal(2, msg.To.Count);
+        Assert.Contains("pm@x.com", msg.To);
+        Assert.Equal("bcc@x.com", msg.Bcc);
+        Assert.DoesNotContain("[SILENT]", msg.Subject);
+    }
+
+    [Fact]
+    public async Task SilentPractice_MatchesMultiSelectToken()
+    {
+        var (n, s) = Make(new NotificationOptions
+        {
+            Enabled = true,
+            TestRecipient = "verifier@x.com",
+            SilentPractices = new List<string> { "Tangible Assets" },
+        });
+
+        // Multi-select practice value from a HubSpot deal.
+        var multi = Notice() with { Practice = "Estate & Gift;Tangible Assets" };
+        await n.NotifyCreatedAsync(multi, new[] { "pm@x.com" }, "leader@x.com", CancellationToken.None);
+
+        var msg = Assert.Single(s.Sent);
+        Assert.Equal(new[] { "verifier@x.com" }, msg.To);
+        Assert.StartsWith("[SILENT]", msg.Subject);
+    }
+
+    [Fact]
     public void ScopingCreated_SubjectAndBody_ReflectScoping()
     {
         var scoping = Notice() with { Phase = WorkspacePhase.Scoping, IdLabel = "Opportunity #", IdValue = "PQ007180" };
@@ -92,6 +153,24 @@ public class WorkspaceNotifierTests
         Assert.Contains("PQ007180", subject);
         Assert.Contains("Open the dataroom", html);
         Assert.Contains("Client file-request link", html);   // upload link present -> button rendered
+    }
+
+    [Fact]
+    public void Created_Kicker_ReflectsActualPractice_NotHardcodedGiftEstate()
+    {
+        var n = Notice() with { Practice = "Financial & Tax Reporting" };
+        var (_, html) = WorkspaceEmail.BuildCreated(n);
+        Assert.Contains("Financial &amp; Tax Reporting", html);   // real practice in the header kicker
+        Assert.DoesNotContain("Gift &amp; Estate", html);          // no longer hardcoded
+    }
+
+    [Fact]
+    public void ClientUpload_Kicker_ReflectsActualPractice()
+    {
+        var n = Notice() with { Practice = "Tangible Assets" };
+        var (_, html) = WorkspaceEmail.BuildClientUpload(n, new[] { "a.pdf" }, "https://x/upload");
+        Assert.Contains("Tangible Assets", html);
+        Assert.DoesNotContain("Gift &amp; Estate", html);
     }
 
     [Fact]

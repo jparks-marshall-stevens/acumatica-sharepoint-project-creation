@@ -24,6 +24,21 @@ public static class SharePointNaming
     }
 
     /// <summary>
+    /// Builds an absolute URL to a document set / folder from the site URL and either a server-relative
+    /// path or an already-absolute URL. When the input is absolute (as <c>DocumentSet.Create</c> can
+    /// return), only its path is kept — otherwise the site origin would be prepended to a full URL and the
+    /// host would be doubled (<c>…sharepoint.com…sharepoint.com/sites/…</c>). Spaces are percent-encoded.
+    /// </summary>
+    public static string ToAbsoluteUrl(string siteUrl, string urlOrServerRelative)
+    {
+        var origin = new Uri(siteUrl).GetLeftPart(UriPartial.Authority);
+        var path = urlOrServerRelative.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+            ? Uri.UnescapeDataString(new Uri(urlOrServerRelative).AbsolutePath)
+            : urlOrServerRelative;
+        return origin + path.Replace(" ", "%20");
+    }
+
+    /// <summary>
     /// Replaces characters SharePoint forbids in leaf names with '-', trims surrounding
     /// whitespace and dots, and falls back to "Untitled" for an otherwise-empty result.
     /// </summary>

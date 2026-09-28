@@ -332,6 +332,9 @@ public sealed class HubSpotClient : IHubSpotClient
         if (!string.IsNullOrWhiteSpace(_options.PracticeProperty)) props.Add(_options.PracticeProperty);
         if (!string.IsNullOrWhiteSpace(_options.ClientContactIdProperty)) props.Add(_options.ClientContactIdProperty);
         if (!string.IsNullOrWhiteSpace(_options.OpportunityIdProperty)) props.Add(_options.OpportunityIdProperty);
+        if (!string.IsNullOrWhiteSpace(_options.ProjectManagerProperty)) props.Add(_options.ProjectManagerProperty);
+        if (!string.IsNullOrWhiteSpace(_options.OriginatorAProperty)) props.Add(_options.OriginatorAProperty);
+        if (!string.IsNullOrWhiteSpace(_options.OriginatorBProperty)) props.Add(_options.OriginatorBProperty);
         props.AddRange(_options.ExtraProperties);
 
         return props
@@ -397,6 +400,9 @@ public sealed class HubSpotClient : IHubSpotClient
             StageId = Get("dealstage"),
             PipelineId = Get("pipeline"),
             OwnerId = Get(_options.OwnerIdProperty),
+            ProjectManagerId = Get(_options.ProjectManagerProperty),
+            OriginatorAId = Get(_options.OriginatorAProperty),
+            OriginatorBId = Get(_options.OriginatorBProperty),
             ClientContactId = Get(_options.ClientContactIdProperty),
             OpportunityId = Get(_options.OpportunityIdProperty)?.Trim(),
             CreatedAt = ParseTop(result, "createdAt"),
