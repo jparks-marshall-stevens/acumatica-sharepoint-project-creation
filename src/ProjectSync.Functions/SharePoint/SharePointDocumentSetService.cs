@@ -266,15 +266,9 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
     private static IEnumerable<string?> ProjectRecipients(AcumaticaProject project, PracticeMappingEntry destination)
     {
         yield return project.ProjectManagerEmail;
+        yield return project.PrincipalInChargeEmail;
         foreach (var e in project.TeamEmails) yield return e;
         foreach (var e in destination.AdminEmails) yield return e;
-        // The PIC is included only so a leader who is PIC isn't lost: a non-leader PIC who isn't also PM or
-        // team never had room access, so they aren't emailed.
-        if (!string.IsNullOrWhiteSpace(destination.PracticeLeaderEmail)
-            && string.Equals(project.PrincipalInChargeEmail?.Trim(), destination.PracticeLeaderEmail.Trim(), StringComparison.OrdinalIgnoreCase))
-        {
-            yield return project.PrincipalInChargeEmail;
-        }
     }
 
     private static IEnumerable<string?> ScopingRecipients(ScopingWorkspace ws, PracticeMappingEntry destination)
@@ -892,6 +886,15 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
     {
         var folder = ctx.Web.GetFolderByServerRelativeUrl(ToServerRelative(serverRelativeUrl));
         var item = folder.ListItemAllFields;
+        try
+        {
+            await EnsurePrincipalInChargeColumnAsync(ctx, item.ParentList);
+        }
+        catch (Exception ex)
+        {
+            // Never block the room over the PIC column; it's retried on the next write.
+            _logger.LogWarning("Couldn't ensure the Principal in Charge column: {Message}", ex.Message);
+        }
         ctx.Load(item);
         await ctx.ExecuteQueryRetryAsync();
 
@@ -903,6 +906,16 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         {
             pmValue = await ResolvePersonAsync(ctx, _options.ProjectManagerColumn, item,
                 project.ProjectManagerEmail, project.ProjectManager);
+        }
+
+        // PIC (People column). Resolved up front for the same single-Update reason; blank clears it.
+        var hasPicColumn = !string.IsNullOrWhiteSpace(_options.PrincipalInChargeColumn)
+            && item.FieldValues.ContainsKey(_options.PrincipalInChargeColumn);
+        FieldUserValue? picValue = null;
+        if (hasPicColumn && !string.IsNullOrWhiteSpace(project.PrincipalInChargeEmail))
+        {
+            var pic = await TryEnsureUserAsync(ctx, project.PrincipalInChargeEmail);
+            picValue = pic is null ? null : new FieldUserValue { LookupId = pic.Id };
         }
 
         SetIfPresent(item, _options.ProjectIdColumn, project.ProjectId);
@@ -926,6 +939,11 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         else
         {
             SetIfPresent(item, _options.ProjectManagerColumn, project.ProjectManager);
+        }
+
+        if (hasPicColumn)
+        {
+            item[_options.PrincipalInChargeColumn] = picValue;
         }
 
         // Stamp the reconcile signature so an unchanged project is skipped on later sweeps.
@@ -1000,7 +1018,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         var pmIdentity = !string.IsNullOrWhiteSpace(project.ProjectManagerEmail)
             ? project.ProjectManagerEmail
             : project.ProjectManager;
-        var identities = new List<string?> { pmIdentity, destination.PracticeLeaderEmail };
+        var identities = new List<string?> { pmIdentity, project.PrincipalInChargeEmail, destination.PracticeLeaderEmail };
         identities.AddRange(project.TeamEmails);
         identities.AddRange(destination.AdminEmails);
         return ApplyPermissionsCoreAsync(ctx, serverRelativeUrl, identities, destination.MembersPermissionLevel,
@@ -1207,6 +1225,43 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         identities.AddRange(destination.AdminEmails);
         return ApplyPermissionsCoreAsync(ctx, serverRelativeUrl, identities, destination.MembersPermissionLevel,
             $"deal {ws.DealId}", cancellationToken);
+    }
+
+    // Libraries already checked for the PIC column in this process (one lookup per library, not per room).
+    // The service is a singleton shared by concurrently running functions, hence the concurrent set.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, bool> _picColumnChecked = new();
+
+    /// <summary>Ensures the Principal in Charge People column exists on the library (visible in the default view).</summary>
+    private async Task EnsurePrincipalInChargeColumnAsync(ClientContext ctx, List list)
+    {
+        var col = _options.PrincipalInChargeColumn;
+        if (string.IsNullOrWhiteSpace(col))
+        {
+            return;
+        }
+
+        ctx.Load(list, l => l.Id);
+        await ctx.ExecuteQueryRetryAsync();
+        if (_picColumnChecked.ContainsKey(list.Id))
+        {
+            return;
+        }
+
+        ctx.Load(list.Fields, fs => fs.Include(f => f.InternalName));
+        await ctx.ExecuteQueryRetryAsync();
+        if (!list.Fields.Any(f => f.InternalName == col))
+        {
+            // Created with the internal name, then renamed so people see "Principal in Charge".
+            var field = list.Fields.AddFieldAsXml(
+                $"<Field Type='User' Name='{col}' StaticName='{col}' DisplayName='{col}' UserSelectionMode='PeopleOnly' Group='ProjectSync'/>",
+                addToDefaultView: true, options: AddFieldOptions.AddFieldInternalNameHint);
+            field.Title = "Principal in Charge";
+            field.Update();
+            await ctx.ExecuteQueryRetryAsync();
+            _logger.LogInformation("Created People column '{Column}' (Principal in Charge).", col);
+        }
+
+        _picColumnChecked.TryAdd(list.Id, true);
     }
 
     /// <summary>Ensures a visible text column exists on the library, creating it if missing.</summary>

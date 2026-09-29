@@ -75,6 +75,13 @@ public sealed class SharePointOptions
     /// </summary>
     public bool ProjectManagerIsPersonColumn { get; set; }
 
+    /// <summary>
+    /// People column holding the project's principal in charge (from Acumatica:PrincipalInChargeField). The
+    /// sync creates it on a library the first time it's needed (display name "Principal in Charge", added to
+    /// the default view). Blank = don't write a PIC column.
+    /// </summary>
+    public string PrincipalInChargeColumn { get; set; } = "PrincipalInCharge";
+
     public string PracticeColumn { get; set; } = "Practice";
 
     // --- Scoping (HubSpot-sourced) workspace columns ---

@@ -18,7 +18,7 @@ public static class ReconcileSignature
     public static IReadOnlyList<string> GranteeEmails(AcumaticaProject project, string? leaderEmail, IEnumerable<string>? adminEmails = null)
     {
         var pm = string.IsNullOrWhiteSpace(project.ProjectManagerEmail) ? project.ProjectManager : project.ProjectManagerEmail;
-        var all = new List<string?> { pm, leaderEmail };
+        var all = new List<string?> { pm, project.PrincipalInChargeEmail, leaderEmail };
         all.AddRange(project.TeamEmails);
         if (adminEmails is not null) all.AddRange(adminEmails);
         return all

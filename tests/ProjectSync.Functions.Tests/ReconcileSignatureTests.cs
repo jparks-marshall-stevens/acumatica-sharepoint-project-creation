@@ -61,4 +61,14 @@ public class ReconcileSignatureTests
         Assert.Equal(edit, ReconcileSignature.Compute(Project(), "leader@x.com", null, " edit "));
         Assert.NotEqual(edit, ReconcileSignature.Compute(Project(), "leader@x.com", null, "Read"));
     }
+
+    [Fact]
+    public void Pic_IsAGrantee_AndChangesTheSignature()
+    {
+        var withPic = Project() with { PrincipalInChargeEmail = "PIC@x.com" };
+        Assert.Contains("pic@x.com", ReconcileSignature.GranteeEmails(withPic, "leader@x.com"));
+        Assert.NotEqual(ReconcileSignature.Compute(Project(), "leader@x.com"), ReconcileSignature.Compute(withPic, "leader@x.com"));
+        Assert.Equal(ReconcileSignature.Compute(Project(), "leader@x.com"),
+            ReconcileSignature.Compute(Project() with { PrincipalInChargeEmail = null }, "leader@x.com"));
+    }
 }
