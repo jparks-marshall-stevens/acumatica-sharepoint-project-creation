@@ -371,66 +371,57 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         DateTimeOffset since, CancellationToken cancellationToken)
     {
         var result = new ClientUploadScanResult();
-        var marker = "/" + _options.ClientUploadsFolderName.Trim('/') + "/";
 
         foreach (var mapping in _options.PracticeMappings)
+        {
+            // One site failing must not block the others — or the caller's watermark. On 2026-09-29 the ESOP
+            // library passed the 5,000-item list view threshold, the scan threw on that site, the watermark
+            // never advanced, and every earlier site re-sent the same upload emails every 15 minutes.
+            try
+            {
+                await ScanSiteClientUploadsAsync(mapping, since, result, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                result.SitesFailed++;
+                _logger.LogError(ex, "Client-upload scan failed for practice {Practice}; other sites continue. Uploads there since {Since:o} were not notified.",
+                    mapping.Practice, since);
+            }
+        }
+
+        _logger.LogInformation(
+            "Client-upload scan since {Since:o}: {Files} new file(s) across {Workspaces} workspace(s); {Notified} notified; {Failed} site(s) failed.",
+            since, result.NewFiles, result.WorkspacesWithNewFiles, result.Notified, result.SitesFailed);
+        return result;
+    }
+
+    private async Task ScanSiteClientUploadsAsync(
+        PracticeMappingEntry mapping, DateTimeOffset since, ClientUploadScanResult result, CancellationToken cancellationToken)
+    {
+        var marker = "/" + _options.ClientUploadsFolderName.Trim('/') + "/";
         {
             var siteUrl = string.IsNullOrWhiteSpace(mapping.SiteUrl) ? _options.SiteUrl : mapping.SiteUrl!;
             using var ctx = await _contextFactory.CreateContextAsync(siteUrl);
             var list = ctx.Web.Lists.GetByTitle(mapping.Library);
             ctx.Load(list, l => l.RootFolder.ServerRelativeUrl);
             await ctx.ExecuteQueryRetryAsync();
+            await EnsureCreatedIndexedAsync(ctx, list, siteUrl);
 
-            // All files created since the watermark, library-wide, then keep only those under a Client
-            // Uploads folder — grouped back to their owning document set.
-            var newByDocSet = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-            var sinceUtc = since.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ");
-            ListItemCollectionPosition? position = null;
-            do
+            // Files created since the watermark under a Client Uploads folder, grouped by document set.
+            // The library-wide query is cheapest; when SharePoint refuses it (library over the list view
+            // threshold without a Created index — e.g. ESOP after the MN migration — or a copy-migration
+            // that creates 5,000+ files in one window), walk each room's Client Uploads folder instead.
+            Dictionary<string, List<string>> newByDocSet;
+            try
             {
-                var query = new CamlQuery
-                {
-                    ViewXml =
-                        "<View Scope='RecursiveAll'><Query><Where><And>" +
-                        "<Eq><FieldRef Name='FSObjType'/><Value Type='Integer'>0</Value></Eq>" +
-                        $"<Gt><FieldRef Name='Created'/><Value Type='DateTime' IncludeTimeValue='TRUE'>{sinceUtc}</Value></Gt>" +
-                        "</And></Where></Query>" +
-                        "<ViewFields><FieldRef Name='FileRef'/><FieldRef Name='FileLeafRef'/></ViewFields>" +
-                        "<RowLimit Paged='TRUE'>1000</RowLimit></View>",
-                    ListItemCollectionPosition = position,
-                };
-                var items = list.GetItems(query);
-                ctx.Load(items, c => c.ListItemCollectionPosition, c => c.Include(i => i["FileRef"], i => i["FileLeafRef"]));
-                await ctx.ExecuteQueryRetryAsync();
-
-                foreach (var it in items)
-                {
-                    var fileRef = it["FileRef"]?.ToString();
-                    var leaf = it["FileLeafRef"]?.ToString();
-                    if (string.IsNullOrWhiteSpace(fileRef) || string.IsNullOrWhiteSpace(leaf))
-                    {
-                        continue;
-                    }
-
-                    var idx = fileRef.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-                    if (idx < 0)
-                    {
-                        continue; // not under a Client Uploads folder
-                    }
-
-                    var docSetUrl = fileRef[..idx];
-                    if (!newByDocSet.TryGetValue(docSetUrl, out var names))
-                    {
-                        names = new List<string>();
-                        newByDocSet[docSetUrl] = names;
-                    }
-
-                    names.Add(leaf!);
-                }
-
-                position = items.ListItemCollectionPosition;
+                newByDocSet = await FindNewUploadsByQueryAsync(ctx, list, since, marker);
             }
-            while (position is not null);
+            catch (ServerException ex) when (ClientUploadQuery.IsListViewThreshold(ex.ServerErrorTypeName, ex.Message))
+            {
+                _logger.LogWarning("Client-upload query on {Site} exceeds the list view threshold; checking each room's {Folder} folder instead.",
+                    siteUrl, _options.ClientUploadsFolderName);
+                newByDocSet = await FindNewUploadsByFolderWalkAsync(ctx, list, mapping.ParentFolder, since);
+            }
 
             foreach (var (docSetUrl, fileNames) in newByDocSet)
             {
@@ -483,11 +474,136 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
                 }
             }
         }
+    }
 
-        _logger.LogInformation(
-            "Client-upload scan since {Since:o}: {Files} new file(s) across {Workspaces} workspace(s); {Notified} notified.",
-            since, result.NewFiles, result.WorkspacesWithNewFiles, result.Notified);
-        return result;
+    /// <summary>Library-wide CAML query for new files, grouped by owning document set.</summary>
+    private static async Task<Dictionary<string, List<string>>> FindNewUploadsByQueryAsync(
+        ClientContext ctx, List list, DateTimeOffset since, string marker)
+    {
+        var found = new List<(string FileRef, string Leaf)>();
+        ListItemCollectionPosition? position = null;
+        do
+        {
+            var query = new CamlQuery
+            {
+                ViewXml = ClientUploadQuery.Build(since),
+                ListItemCollectionPosition = position,
+            };
+            var items = list.GetItems(query);
+            ctx.Load(items, c => c.ListItemCollectionPosition, c => c.Include(i => i["FileRef"], i => i["FileLeafRef"]));
+            await ctx.ExecuteQueryRetryAsync();
+
+            foreach (var it in items)
+            {
+                var fileRef = it["FileRef"]?.ToString();
+                var leaf = it["FileLeafRef"]?.ToString();
+                if (!string.IsNullOrWhiteSpace(fileRef) && !string.IsNullOrWhiteSpace(leaf))
+                {
+                    found.Add((fileRef, leaf));
+                }
+            }
+
+            position = items.ListItemCollectionPosition;
+        }
+        while (position is not null);
+
+        return ClientUploadQuery.GroupByDocSet(found, marker);
+    }
+
+    /// <summary>
+    /// Threshold-proof fallback: lists each room under the practice's parent folder, then walks that room's
+    /// Client Uploads folder with the Files/Folders collections (not subject to the list view threshold) and
+    /// keeps files created after <paramref name="since"/>. Folders under the parent with no Client Uploads
+    /// folder (e.g. ESOP's migrated "MN ESOP Clients") are skipped.
+    /// </summary>
+    private async Task<Dictionary<string, List<string>>> FindNewUploadsByFolderWalkAsync(
+        ClientContext ctx, List list, string? parentFolder, DateTimeOffset since)
+    {
+        var root = list.RootFolder.ServerRelativeUrl.TrimEnd('/');
+        var parentUrl = string.IsNullOrWhiteSpace(parentFolder) ? root : $"{root}/{parentFolder.Trim('/')}";
+        var parent = ctx.Web.GetFolderByServerRelativeUrl(parentUrl);
+        // Rooms and their immediate subfolders in one round trip. (Loading Exists on a missing folder
+        // throws "File Not Found" in CSOM, so find Client Uploads by name instead.)
+        ctx.Load(parent.Folders, fs => fs.Include(
+            f => f.Name,
+            f => f.Folders.Include(c => c.Name, c => c.ServerRelativeUrl)));
+        await ctx.ExecuteQueryRetryAsync();
+
+        var sinceUtc = since.UtcDateTime;
+        var found = new List<(string FileRef, string Leaf)>();
+        foreach (var room in parent.Folders)
+        {
+            var uploads = room.Folders.FirstOrDefault(c =>
+                c.Name.Equals(_options.ClientUploadsFolderName, StringComparison.OrdinalIgnoreCase));
+            if (uploads is null)
+            {
+                continue; // not a room (e.g. "MN ESOP Clients") or a room without an uploads folder
+            }
+
+            await CollectFilesCreatedAfterAsync(ctx, ctx.Web.GetFolderByServerRelativeUrl(uploads.ServerRelativeUrl), sinceUtc, found);
+        }
+
+        return ClientUploadQuery.GroupByDocSet(found, "/" + _options.ClientUploadsFolderName.Trim('/') + "/");
+    }
+
+    private static async Task CollectFilesCreatedAfterAsync(
+        ClientContext ctx, Folder folder, DateTime sinceUtc, List<(string FileRef, string Leaf)> found)
+    {
+        ctx.Load(folder.Files, fs => fs.Include(f => f.Name, f => f.ServerRelativeUrl, f => f.TimeCreated));
+        ctx.Load(folder.Folders, fs => fs.Include(f => f.Name, f => f.ServerRelativeUrl));
+        await ctx.ExecuteQueryRetryAsync();
+
+        foreach (var file in folder.Files)
+        {
+            if (file.TimeCreated > sinceUtc)
+            {
+                found.Add((file.ServerRelativeUrl, file.Name));
+            }
+        }
+
+        foreach (var sub in folder.Folders)
+        {
+            await CollectFilesCreatedAfterAsync(ctx, sub, sinceUtc, found);
+        }
+    }
+
+    // Sites whose Created column is known to be indexed (checked once per host process).
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> CreatedIndexedSites =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Indexes the library's Created column so the scan's Created filter stays under the list view
+    /// threshold once a library passes 5,000 items. Fail-soft: without it the query still works on small
+    /// libraries, and a large one fails that site alone.
+    /// </summary>
+    private async Task EnsureCreatedIndexedAsync(ClientContext ctx, List list, string siteUrl)
+    {
+        if (CreatedIndexedSites.ContainsKey(siteUrl))
+        {
+            return;
+        }
+
+        try
+        {
+            var created = list.Fields.GetByInternalNameOrTitle("Created");
+            ctx.Load(created, f => f.Indexed);
+            await ctx.ExecuteQueryRetryAsync();
+            if (!created.Indexed)
+            {
+                created.Indexed = true;
+                created.Update();
+                await ctx.ExecuteQueryRetryAsync();
+                _logger.LogInformation("Indexed the Created column on {Site} for the client-upload scan.", siteUrl);
+            }
+            CreatedIndexedSites[siteUrl] = true;
+        }
+        catch (Exception ex)
+        {
+            // SharePoint refuses to index a library already past the threshold. Don't retry every cycle —
+            // the folder-walk fallback covers it; the next host restart tries again.
+            CreatedIndexedSites[siteUrl] = false;
+            _logger.LogWarning("Couldn't index the Created column on {Site}: {Message}", siteUrl, ex.Message);
+        }
     }
 
     /// <summary>Resolves a document set's role assignments to the email addresses of its individual members.</summary>

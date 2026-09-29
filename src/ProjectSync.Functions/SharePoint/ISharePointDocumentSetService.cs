@@ -51,6 +51,9 @@ public sealed record ClientUploadScanResult
     public int WorkspacesWithNewFiles { get; set; }
     public int NewFiles { get; set; }
     public int Notified { get; set; }
+
+    /// <summary>Practice sites whose scan threw; logged as errors, and the other sites still ran.</summary>
+    public int SitesFailed { get; set; }
 }
 
 /// <summary>Outcome of a reconcile pass.</summary>
