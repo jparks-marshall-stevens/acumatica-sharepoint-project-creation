@@ -50,7 +50,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
 
         // Idempotency is keyed on the Project Id metadata column (unique), NOT the folder name —
         // folder names come from the description and are not guaranteed unique.
-        var existing = await FindExistingByProjectIdAsync(ctx, list, project.ProjectId, cancellationToken);
+        var existing = await FindExistingByProjectIdAsync(ctx, list, destination.ParentFolder, project.ProjectId, cancellationToken);
         if (existing is not null)
         {
             _logger.LogInformation("Document set for project {ProjectId} already exists at {Url}; updating metadata + permissions.",
@@ -70,8 +70,8 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         if (!string.IsNullOrWhiteSpace(project.HubSpotLink))
         {
             var scoping =
-                await FindByColumnAsync(ctx, list, _options.OpportunityIdColumn, project.HubSpotLink!, cancellationToken)
-                ?? await FindByColumnAsync(ctx, list, _options.HubSpotDealIdColumn, project.HubSpotLink!, cancellationToken);
+                await FindByColumnAsync(ctx, list, destination.ParentFolder, _options.OpportunityIdColumn, project.HubSpotLink!, cancellationToken)
+                ?? await FindByColumnAsync(ctx, list, destination.ParentFolder, _options.HubSpotDealIdColumn, project.HubSpotLink!, cancellationToken);
 
             if (scoping is not null && !string.IsNullOrWhiteSpace(scoping.ProjectId))
             {
@@ -158,7 +158,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         // Idempotency keyed on the HubSpot deal id — immutable, unlike the opportunity number, which can
         // be assigned or corrected later. Keying on the id is what stops a late-arriving opportunity number
         // from looking like a new engagement and producing a duplicate workspace.
-        var existing = await FindByColumnAsync(ctx, list, _options.HubSpotDealIdColumn, workspace.DealId, cancellationToken);
+        var existing = await FindByColumnAsync(ctx, list, destination.ParentFolder, _options.HubSpotDealIdColumn, workspace.DealId, cancellationToken);
         if (existing is not null && !string.IsNullOrWhiteSpace(existing.ProjectId))
         {
             // The workspace has been promoted: it is an Acumatica project now, and Acumatica owns its
@@ -656,76 +656,93 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
                 Site: string.IsNullOrWhiteSpace(x.Dest.SiteUrl) ? _options.SiteUrl : x.Dest.SiteUrl!,
                 x.Dest.Library));
 
+        var failedSites = new List<string>();
         foreach (var group in groups)
         {
-            using var ctx = await _contextFactory.CreateContextAsync(group.Key.Site);
-            var list = ctx.Web.Lists.GetByTitle(group.Key.Library);
-            ctx.Load(list, l => l.RootFolder.ServerRelativeUrl);
-            await ctx.ExecuteQueryRetryAsync();
-
-            await EnsureSignatureColumnAsync(ctx, list);
-            await EnsureTextColumnAsync(ctx, list, _options.StatusColumn);
-            await EnsureTextColumnAsync(ctx, list, _options.DataroomUrlColumn);
-            var tracked = await GetTrackedDocSetsAsync(ctx, list, cancellationToken);
-
-            foreach (var x in group)
+            // One site failing (throttling, an outage, a permissions change) must not stop the others.
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (onlyProjectIds is not null && !onlyProjectIds.Contains(x.Project.ProjectId))
-                {
-                    continue;
-                }
+                using var ctx = await _contextFactory.CreateContextAsync(group.Key.Site);
+                var list = ctx.Web.Lists.GetByTitle(group.Key.Library);
+                ctx.Load(list, l => l.RootFolder.ServerRelativeUrl);
+                await ctx.ExecuteQueryRetryAsync();
 
-                if (!tracked.TryGetValue(x.Project.ProjectId, out var t))
-                {
-                    notTracked++; // untracked project — no backfill
-                    continue;
-                }
+                await EnsureSignatureColumnAsync(ctx, list);
+                await EnsureTextColumnAsync(ctx, list, _options.StatusColumn);
+                await EnsureTextColumnAsync(ctx, list, _options.DataroomUrlColumn);
+                var parentFolders = group.Select(x => x.Dest.ParentFolder).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                var tracked = await GetTrackedDocSetsAsync(ctx, list, parentFolders, cancellationToken);
 
-                considered++;
+                foreach (var x in group)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (onlyProjectIds is not null && !onlyProjectIds.Contains(x.Project.ProjectId))
+                    {
+                        continue;
+                    }
 
-                // Detect a manual folder rename: the folder's current URL no longer matches the one stamped
-                // in the metadata column. (A rename touches nothing in Acumatica, so signature-gating alone
-                // would never catch it.) An empty column means the workspace predates this feature — seed it
-                // silently so we don't fire a write-back storm on the first sweep.
-                var currentUrl = BuildAbsoluteUrl(group.Key.Site, t.Url);
-                var urlMissing = string.IsNullOrWhiteSpace(t.DataroomUrl);
-                var urlDrifted = !urlMissing && !string.Equals(t.DataroomUrl, currentUrl, StringComparison.OrdinalIgnoreCase);
+                    if (!tracked.TryGetValue(x.Project.ProjectId, out var t))
+                    {
+                        notTracked++; // untracked project — no backfill
+                        continue;
+                    }
 
-                var desiredSig = ReconcileSignature.Compute(x.Project, x.Dest.PracticeLeaderEmail, x.Dest.AdminEmails, x.Dest.MembersPermissionLevel);
-                var sigChanged = !string.Equals(desiredSig, t.Signature, StringComparison.OrdinalIgnoreCase);
+                    considered++;
 
-                if (sigChanged)
-                {
-                    _logger.LogInformation("Reconcile: project {ProjectId} changed — re-applying metadata + permissions.", x.Project.ProjectId);
-                    // ApplyMetadataAsync also (re)stamps the dataroom URL column to the current URL.
-                    await ApplyMetadataAsync(ctx, t.Url, x.Project, desiredSig, group.Key.Site, cancellationToken);
-                    var reconcileAdded = await ApplyPermissionsAsync(ctx, t.Url, x.Project, x.Dest, cancellationToken);
-                    await NotifyProjectAccessAddedAsync(ctx, x.Project, x.Dest, t.Url, group.Key.Site, reconcileAdded, cancellationToken);
-                    updated++;
-                }
-                else if (urlDrifted)
-                {
-                    _logger.LogInformation("Reconcile: project {ProjectId} folder was renamed — refreshing dataroom URL in SharePoint + Acumatica.", x.Project.ProjectId);
-                    await StampDataroomUrlAsync(ctx, t.Url, currentUrl, cancellationToken);
-                    updated++;
-                }
-                else if (urlMissing)
-                {
-                    await StampDataroomUrlAsync(ctx, t.Url, currentUrl, cancellationToken); // seed baseline, no write-back
-                    unchanged++;
-                }
-                else
-                {
-                    unchanged++;
-                }
+                    // Detect a manual folder rename: the folder's current URL no longer matches the one stamped
+                    // in the metadata column. (A rename touches nothing in Acumatica, so signature-gating alone
+                    // would never catch it.) An empty column means the workspace predates this feature — seed it
+                    // silently so we don't fire a write-back storm on the first sweep.
+                    var currentUrl = BuildAbsoluteUrl(group.Key.Site, t.Url);
+                    var urlMissing = string.IsNullOrWhiteSpace(t.DataroomUrl);
+                    var urlDrifted = !urlMissing && !string.Equals(t.DataroomUrl, currentUrl, StringComparison.OrdinalIgnoreCase);
 
-                // Re-write Acumatica's DATAURL only for a genuine rename (a prior value existed and changed).
-                if (urlDrifted)
-                {
-                    resyncs.Add(new UrlResync(x.Project.ProjectId, currentUrl));
+                    var desiredSig = ReconcileSignature.Compute(x.Project, x.Dest.PracticeLeaderEmail, x.Dest.AdminEmails, x.Dest.MembersPermissionLevel);
+                    var sigChanged = !string.Equals(desiredSig, t.Signature, StringComparison.OrdinalIgnoreCase);
+
+                    if (sigChanged)
+                    {
+                        _logger.LogInformation("Reconcile: project {ProjectId} changed — re-applying metadata + permissions.", x.Project.ProjectId);
+                        // ApplyMetadataAsync also (re)stamps the dataroom URL column to the current URL.
+                        await ApplyMetadataAsync(ctx, t.Url, x.Project, desiredSig, group.Key.Site, cancellationToken);
+                        var reconcileAdded = await ApplyPermissionsAsync(ctx, t.Url, x.Project, x.Dest, cancellationToken);
+                        await NotifyProjectAccessAddedAsync(ctx, x.Project, x.Dest, t.Url, group.Key.Site, reconcileAdded, cancellationToken);
+                        updated++;
+                    }
+                    else if (urlDrifted)
+                    {
+                        _logger.LogInformation("Reconcile: project {ProjectId} folder was renamed — refreshing dataroom URL in SharePoint + Acumatica.", x.Project.ProjectId);
+                        await StampDataroomUrlAsync(ctx, t.Url, currentUrl, cancellationToken);
+                        updated++;
+                    }
+                    else if (urlMissing)
+                    {
+                        await StampDataroomUrlAsync(ctx, t.Url, currentUrl, cancellationToken); // seed baseline, no write-back
+                        unchanged++;
+                    }
+                    else
+                    {
+                        unchanged++;
+                    }
+
+                    // Re-write Acumatica's DATAURL only for a genuine rename (a prior value existed and changed).
+                    if (urlDrifted)
+                    {
+                        resyncs.Add(new UrlResync(x.Project.ProjectId, currentUrl));
+                    }
                 }
             }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                failedSites.Add(group.Key.Site);
+                _logger.LogError(ex, "Reconcile failed for {Site} ({Library}); continuing with the other sites.",
+                    group.Key.Site, group.Key.Library);
+            }
+        }
+
+        if (failedSites.Count > 0)
+        {
+            _logger.LogError("Reconcile finished with {Count} failed site(s): {Sites}.", failedSites.Count, string.Join(", ", failedSites));
         }
 
         return new ReconcileResult
@@ -772,52 +789,156 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         _logger.LogInformation("Created reconcile signature column '{Column}'.", col);
     }
 
-    /// <summary>Bulk-reads all tracked document sets: project id → (folder url, stored signature, stored dataroom url).</summary>
+    /// <summary>
+    /// Reads every tracked room (one with a Project Id) under the given parent folders: project id ->
+    /// (folder url, stored signature, stored dataroom url). Reads only the parent folders' direct children
+    /// (see <see cref="RoomQuery"/>), so it works however many files the library holds.
+    /// </summary>
     private async Task<Dictionary<string, (string Url, string? Signature, string? DataroomUrl)>> GetTrackedDocSetsAsync(
-        ClientContext ctx, List list, CancellationToken cancellationToken)
+        ClientContext ctx, List list, IReadOnlyList<string?> parentFolders, CancellationToken cancellationToken)
     {
         var result = new Dictionary<string, (string, string?, string?)>(StringComparer.OrdinalIgnoreCase);
         var pidCol = _options.ProjectIdColumn;
         var sigCol = _options.SignatureColumn;
         var urlCol = _options.DataroomUrlColumn;
-        ListItemCollectionPosition? position = null;
-        do
+        foreach (var parent in parentFolders)
         {
-            var query = new CamlQuery
+            var rooms = await ReadRoomsAsync(ctx, list, parent, new[] { pidCol, sigCol, urlCol }, cancellationToken);
+            foreach (var it in rooms)
             {
-                ViewXml =
-                    "<View Scope='RecursiveAll'><Query><Where><And>" +
-                    "<Eq><FieldRef Name='FSObjType'/><Value Type='Integer'>1</Value></Eq>" +
-                    $"<IsNotNull><FieldRef Name='{pidCol}'/></IsNotNull>" +
-                    "</And></Where></Query>" +
-                    $"<ViewFields><FieldRef Name='{pidCol}'/><FieldRef Name='{sigCol}'/><FieldRef Name='{urlCol}'/><FieldRef Name='FileRef'/></ViewFields>" +
-                    "<RowLimit Paged='TRUE'>2000</RowLimit></View>",
-                ListItemCollectionPosition = position,
-            };
-            var items = list.GetItems(query);
-            ctx.Load(items, c => c.ListItemCollectionPosition,
-                c => c.Include(i => i["FileRef"], i => i[pidCol], i => i[sigCol], i => i[urlCol]));
-            await ctx.ExecuteQueryRetryAsync();
-
-            foreach (var it in items)
-            {
-                var pid = it[pidCol]?.ToString()?.Trim();
+                var pid = Field(it, pidCol)?.Trim();
                 if (string.IsNullOrWhiteSpace(pid))
                 {
                     continue;
                 }
 
-                var sig = it.FieldValues.TryGetValue(sigCol, out var s) ? s?.ToString() : null;
-                var storedUrl = it.FieldValues.TryGetValue(urlCol, out var u) ? u?.ToString() : null;
-                result[pid!] = (it["FileRef"]?.ToString() ?? string.Empty, sig, storedUrl);
+                result[pid!] = (Field(it, "FileRef") ?? string.Empty, Field(it, sigCol), Field(it, urlCol));
             }
+        }
 
+        return result;
+    }
+
+    /// <summary>
+    /// All rooms that are direct children of <paramref name="parentFolder"/> (the mapping's ParentFolder,
+    /// e.g. Projects/Current), with the requested fields plus FileRef. Unfiltered, ID-ordered paging scoped
+    /// to that folder, so the list view threshold never applies.
+    /// </summary>
+    private async Task<List<ListItem>> ReadRoomsAsync(
+        ClientContext ctx, List list, string? parentFolder, IReadOnlyList<string> fields, CancellationToken cancellationToken)
+    {
+        ctx.Load(list, l => l.RootFolder.ServerRelativeUrl);
+        await ctx.ExecuteQueryRetryAsync();
+        var folderUrl = RoomQuery.ParentFolderUrl(list.RootFolder.ServerRelativeUrl, parentFolder);
+
+        var wanted = fields.Where(f => !string.IsNullOrWhiteSpace(f)).Append("FileRef").Distinct().ToList();
+        var rooms = new List<ListItem>();
+        ListItemCollectionPosition? position = null;
+        do
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var query = new CamlQuery
+            {
+                ViewXml = RoomQuery.FolderChildren(wanted),
+                FolderServerRelativeUrl = folderUrl,
+                ListItemCollectionPosition = position,
+            };
+            var items = list.GetItems(query);
+            ctx.Load(items, c => c.ListItemCollectionPosition);
+            ctx.Load(items, c => c.Include(i => i["FSObjType"], i => i["ContentTypeId"]));
+            foreach (var f in wanted)
+            {
+                var name = f;
+                ctx.Load(items, c => c.Include(i => i[name]));
+            }
+            await ctx.ExecuteQueryRetryAsync();
+
+            rooms.AddRange(items.Where(i => RoomQuery.IsRoom(i["FSObjType"], i["ContentTypeId"])));
             position = items.ListItemCollectionPosition;
         }
         while (position is not null);
 
-        return result;
+        return rooms;
     }
+
+    /// <summary>
+    /// Rooms whose <paramref name="column"/> equals <paramref name="value"/> (at most <paramref name="max"/>).
+    /// Tries the indexed lookup first (instant at any size, and finds the room anywhere in the library); if
+    /// SharePoint still refuses it (the column isn't indexed yet, or the library is too large to index),
+    /// falls back to reading the parent folder's rooms and matching in code.
+    /// </summary>
+    private async Task<List<ListItem>> FindRoomsByColumnAsync(
+        ClientContext ctx, List list, string? parentFolder, string column, string value, int max,
+        IReadOnlyList<string> fields, CancellationToken cancellationToken)
+    {
+        await EnsureLookupIndexesAsync(ctx, list);
+        var wanted = fields.Append("FileRef").Append(column).Distinct().ToList();
+        try
+        {
+            var items = list.GetItems(new CamlQuery { ViewXml = RoomQuery.Lookup(column, value, max, wanted) });
+            ctx.Load(items, c => c.Include(i => i.FileSystemObjectType));
+            foreach (var f in wanted)
+            {
+                var name = f;
+                ctx.Load(items, c => c.Include(i => i[name]));
+            }
+            await ctx.ExecuteQueryRetryAsync();
+            return items.ToList();
+        }
+        catch (ServerException ex) when (ClientUploadQuery.IsListViewThreshold(ex.ServerErrorTypeName, ex.Message))
+        {
+            _logger.LogInformation("Lookup on {Column} exceeds the list view threshold; matching the rooms in {Folder} instead.",
+                column, parentFolder ?? "<library root>");
+            var rooms = await ReadRoomsAsync(ctx, list, parentFolder, wanted, cancellationToken);
+            return rooms
+                .Where(r => string.Equals(Field(r, column)?.Trim(), value.Trim(), StringComparison.OrdinalIgnoreCase))
+                .Take(max)
+                .ToList();
+        }
+    }
+
+    // Libraries whose lookup columns were already checked for an index in this process.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, bool> _lookupIndexesChecked = new();
+
+    /// <summary>
+    /// Indexes the room key columns (Project Id, HubSpot deal id, opportunity number) so lookups on them stay
+    /// allowed as the library grows. Once per library per process; fail-soft, because SharePoint won't index
+    /// a column on a list that is already very large. The lookup falls back to a folder read in that case.
+    /// </summary>
+    private async Task EnsureLookupIndexesAsync(ClientContext ctx, List list)
+    {
+        ctx.Load(list, l => l.Id);
+        await ctx.ExecuteQueryRetryAsync();
+        if (_lookupIndexesChecked.ContainsKey(list.Id))
+        {
+            return;
+        }
+
+        var keys = new[] { _options.ProjectIdColumn, _options.HubSpotDealIdColumn, _options.OpportunityIdColumn }
+            .Where(c => !string.IsNullOrWhiteSpace(c)).ToList();
+        ctx.Load(list.Fields, fs => fs.Include(f => f.InternalName, f => f.Indexed));
+        await ctx.ExecuteQueryRetryAsync();
+        foreach (var field in list.Fields.Where(f => keys.Contains(f.InternalName) && !f.Indexed).ToList())
+        {
+            try
+            {
+                field.Indexed = true;
+                field.Update();
+                await ctx.ExecuteQueryRetryAsync();
+                _logger.LogInformation("Indexed column '{Column}' for threshold-safe lookups.", field.InternalName);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("Couldn't index column '{Column}' ({Message}); lookups will fall back to reading the rooms folder.",
+                    field.InternalName, ex.Message);
+            }
+        }
+
+        _lookupIndexesChecked.TryAdd(list.Id, true);
+    }
+
+    private static string? Field(ListItem item, string column) =>
+        item.FieldValues.TryGetValue(column, out var v) ? v?.ToString() : null;
 
     private PracticeMappingEntry ResolveDestination(string? practice)
     {
@@ -852,23 +973,11 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
     }
 
     private async Task<string?> FindExistingByProjectIdAsync(
-        ClientContext ctx, List list, string projectId, CancellationToken cancellationToken)
+        ClientContext ctx, List list, string? parentFolder, string projectId, CancellationToken cancellationToken)
     {
-        var safeValue = System.Security.SecurityElement.Escape(projectId) ?? projectId;
-        var query = new CamlQuery
-        {
-            ViewXml =
-                "<View Scope='RecursiveAll'><Query><Where><And>" +
-                $"<Eq><FieldRef Name='{_options.ProjectIdColumn}'/><Value Type='Text'>{safeValue}</Value></Eq>" +
-                "<Eq><FieldRef Name='FSObjType'/><Value Type='Integer'>1</Value></Eq>" +
-                "</And></Where></Query><RowLimit>1</RowLimit></View>",
-        };
-
-        var items = list.GetItems(query);
-        ctx.Load(items, c => c.Include(i => i.FileSystemObjectType, i => i["FileRef"]));
-        await ctx.ExecuteQueryRetryAsync();
-
-        return items.Count > 0 ? items[0]["FileRef"]?.ToString() : null;
+        var rooms = await FindRoomsByColumnAsync(ctx, list, parentFolder, _options.ProjectIdColumn, projectId, 1,
+            Array.Empty<string>(), cancellationToken);
+        return rooms.Count > 0 ? Field(rooms[0], "FileRef") : null;
     }
 
     /// <summary>
@@ -1408,28 +1517,15 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
     /// still in the scoping phase, a populated one means it has already been promoted.
     /// </summary>
     private async Task<TrackedDocSet?> FindByColumnAsync(
-        ClientContext ctx, List list, string column, string value, CancellationToken cancellationToken)
+        ClientContext ctx, List list, string? parentFolder, string column, string value, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(column) || string.IsNullOrWhiteSpace(value))
         {
             return null;
         }
 
-        var safeValue = System.Security.SecurityElement.Escape(value) ?? value;
         var pidCol = _options.ProjectIdColumn;
-        var query = new CamlQuery
-        {
-            ViewXml =
-                "<View Scope='RecursiveAll'><Query><Where><And>" +
-                $"<Eq><FieldRef Name='{column}'/><Value Type='Text'>{safeValue}</Value></Eq>" +
-                "<Eq><FieldRef Name='FSObjType'/><Value Type='Integer'>1</Value></Eq>" +
-                "</And></Where></Query>" +
-                $"<ViewFields><FieldRef Name='FileRef'/><FieldRef Name='{pidCol}'/></ViewFields>" +
-                "<RowLimit>2</RowLimit></View>",
-        };
-        var items = list.GetItems(query);
-        ctx.Load(items, c => c.Include(i => i.FileSystemObjectType, i => i["FileRef"], i => i[pidCol]));
-        await ctx.ExecuteQueryRetryAsync();
+        var items = await FindRoomsByColumnAsync(ctx, list, parentFolder, column, value, 2, new[] { pidCol }, cancellationToken);
         if (items.Count == 0)
         {
             return null;
