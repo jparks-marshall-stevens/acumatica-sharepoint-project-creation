@@ -897,20 +897,31 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
         }
     }
 
+    // Only index while comfortably under the 5,000-item list view threshold, where it's instant.
+    private const int IndexableItemLimit = 4500;
+
     // Libraries whose lookup columns were already checked for an index in this process.
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, bool> _lookupIndexesChecked = new();
 
     /// <summary>
-    /// Indexes the room key columns (Project Id, HubSpot deal id, opportunity number) so lookups on them stay
-    /// allowed as the library grows. Once per library per process; fail-soft, because SharePoint won't index
-    /// a column on a list that is already very large. The lookup falls back to a folder read in that case.
+    /// Indexes the room key columns (Project Id, HubSpot deal id, opportunity number) while the library is
+    /// still under the list view threshold, so lookups on them stay allowed as it grows. Once per library per
+    /// process. A library already over the threshold is left alone: SharePoint builds the index inside the
+    /// request there, which can hang for minutes (it stalled the scoping poll past its 5-minute limit on
+    /// Commercial Litigation), and the lookup's folder-read fallback handles those libraries anyway.
     /// </summary>
     private async Task EnsureLookupIndexesAsync(ClientContext ctx, List list)
     {
-        ctx.Load(list, l => l.Id);
+        ctx.Load(list, l => l.Id, l => l.ItemCount);
         await ctx.ExecuteQueryRetryAsync();
         if (_lookupIndexesChecked.ContainsKey(list.Id))
         {
+            return;
+        }
+
+        if (list.ItemCount >= IndexableItemLimit)
+        {
+            _lookupIndexesChecked.TryAdd(list.Id, true);
             return;
         }
 
