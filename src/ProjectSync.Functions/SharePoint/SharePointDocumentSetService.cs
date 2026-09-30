@@ -900,8 +900,12 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
     // Only index while comfortably under the 5,000-item list view threshold, where it's instant.
     private const int IndexableItemLimit = 4500;
 
-    // Libraries whose lookup columns were already checked for an index in this process.
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, bool> _lookupIndexesChecked = new();
+    // Libraries whose lookup columns were already checked for an index in this process, keyed by LibraryKey.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _lookupIndexesChecked = new();
+
+    // Site URL + list id. A list id alone isn't unique: every group-connected practice site's Documents
+    // library has the same id (d3450558-...), so a cache keyed on it only ever handled the first site.
+    private static string LibraryKey(ClientContext ctx, List list) => $"{ctx.Url.TrimEnd('/')}|{list.Id}";
 
     /// <summary>
     /// Indexes the room key columns (Project Id, HubSpot deal id, opportunity number) while the library is
@@ -914,14 +918,15 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
     {
         ctx.Load(list, l => l.Id, l => l.ItemCount);
         await ctx.ExecuteQueryRetryAsync();
-        if (_lookupIndexesChecked.ContainsKey(list.Id))
+        var key = LibraryKey(ctx, list);
+        if (_lookupIndexesChecked.ContainsKey(key))
         {
             return;
         }
 
         if (list.ItemCount >= IndexableItemLimit)
         {
-            _lookupIndexesChecked.TryAdd(list.Id, true);
+            _lookupIndexesChecked.TryAdd(key, true);
             return;
         }
 
@@ -945,7 +950,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
             }
         }
 
-        _lookupIndexesChecked.TryAdd(list.Id, true);
+        _lookupIndexesChecked.TryAdd(key, true);
     }
 
     private static string? Field(ListItem item, string column) =>
@@ -1465,7 +1470,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
 
     // Libraries already checked for the PIC column in this process (one lookup per library, not per room).
     // The service is a singleton shared by concurrently running functions, hence the concurrent set.
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, bool> _picColumnChecked = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _picColumnChecked = new();
 
     /// <summary>Ensures the Principal in Charge People column exists on the library (visible in the default view).</summary>
     private async Task EnsurePrincipalInChargeColumnAsync(ClientContext ctx, List list)
@@ -1478,7 +1483,8 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
 
         ctx.Load(list, l => l.Id);
         await ctx.ExecuteQueryRetryAsync();
-        if (_picColumnChecked.ContainsKey(list.Id))
+        var key = LibraryKey(ctx, list);
+        if (_picColumnChecked.ContainsKey(key))
         {
             return;
         }
@@ -1497,7 +1503,7 @@ public sealed class SharePointDocumentSetService : ISharePointDocumentSetService
             _logger.LogInformation("Created People column '{Column}' (Principal in Charge).", col);
         }
 
-        _picColumnChecked.TryAdd(list.Id, true);
+        _picColumnChecked.TryAdd(key, true);
     }
 
     /// <summary>Ensures a visible text column exists on the library, creating it if missing.</summary>

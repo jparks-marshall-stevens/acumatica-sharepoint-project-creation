@@ -45,10 +45,11 @@ public static class ReconcileSignature
         parts.AddRange(GranteeEmails(project, leaderEmail, adminEmails));
         // The PIC is also written to its own column, so it must count even when it adds no new grantee (the
         // PIC is often the PM or already on the team). Only when present, so projects without one keep
-        // their existing signatures.
+        // their existing signatures. The "pic2" marker replaced "pic" on 2026-09-30 to re-sync rooms that
+        // were stamped while the column couldn't be created on most practice sites.
         if (!string.IsNullOrWhiteSpace(project.PrincipalInChargeEmail))
         {
-            parts.Add("pic:" + project.PrincipalInChargeEmail.Trim().ToLowerInvariant());
+            parts.Add("pic2:" + project.PrincipalInChargeEmail.Trim().ToLowerInvariant());
         }
         // Only when set, so practices without a Members grant keep their existing signatures (no re-sync).
         if (!string.IsNullOrWhiteSpace(membersPermissionLevel))
