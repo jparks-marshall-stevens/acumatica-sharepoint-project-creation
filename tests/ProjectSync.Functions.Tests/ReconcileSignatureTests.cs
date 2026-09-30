@@ -71,4 +71,14 @@ public class ReconcileSignatureTests
         Assert.Equal(ReconcileSignature.Compute(Project(), "leader@x.com"),
             ReconcileSignature.Compute(Project() with { PrincipalInChargeEmail = null }, "leader@x.com"));
     }
+
+    [Fact]
+    public void Pic_WhoIsAlsoThePm_StillChangesTheSignature_SoTheColumnGetsWritten()
+    {
+        var baseline = Project();
+        var pm = string.IsNullOrWhiteSpace(baseline.ProjectManagerEmail) ? baseline.ProjectManager : baseline.ProjectManagerEmail;
+        var picIsPm = baseline with { PrincipalInChargeEmail = pm };
+        Assert.Equal(ReconcileSignature.GranteeEmails(baseline, "leader@x.com"), ReconcileSignature.GranteeEmails(picIsPm, "leader@x.com"));
+        Assert.NotEqual(ReconcileSignature.Compute(baseline, "leader@x.com"), ReconcileSignature.Compute(picIsPm, "leader@x.com"));
+    }
 }
